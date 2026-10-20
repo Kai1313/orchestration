@@ -54,6 +54,27 @@ class OrchestrationEngine:
             max_cost_usd=config.max_cost_usd,
         )
 
+    def _save_checkpoint(
+        self,
+        state: OrchestrationState,
+        checkpoint_mgr: CheckpointManager,
+        next_phase: TDDPhase | None = None,
+        error: str | None = None,
+    ) -> None:
+        """
+        Synchronizes token usage and cost metrics from TokenBudget,
+        optionally updates current_phase and last_error, and atomically
+        persists state to disk.
+        """
+        if next_phase is not None:
+            state.current_phase = next_phase
+        if error is not None:
+            state.last_error = error
+        state.prompt_tokens = self.budget.used_prompt_tokens
+        state.completion_tokens = self.budget.used_completion_tokens
+        state.estimated_cost_usd = self.budget.estimated_cost_usd
+        checkpoint_mgr.save_state(state.model_dump())
+
     async def _prompt_with_timeout(
         self, prompt_func: Any, *args: Any, default_val: Any = None, **kwargs: Any
     ) -> Any:
@@ -144,14 +165,12 @@ class OrchestrationEngine:
             while state.current_phase not in (TDDPhase.COMPLETED, TDDPhase.FAILED):
                 exceeded, reason = self.budget.is_exceeded()
                 if exceeded:
-                    state.last_error = reason
-                    state.current_phase = TDDPhase.FAILED
-                    checkpoint_mgr.save_state(state.model_dump())
                     console.print(f"[bold red]{reason}[/bold red]")
+                    self._save_checkpoint(state, checkpoint_mgr, next_phase=TDDPhase.FAILED, error=reason)
                     break
 
                 console.print(f"\n[bold cyan]> Entering Phase: {state.current_phase.upper()}[/bold cyan]")
-                checkpoint_mgr.save_state(state.model_dump())
+                self._save_checkpoint(state, checkpoint_mgr)
 
                 if state.current_phase == TDDPhase.TRIAGE:
                     await self._phase_triage(state, runner)
@@ -167,17 +186,14 @@ class OrchestrationEngine:
                     await self._phase_review(state, runner, active_workspace)
 
                 # Persist state after each step
-                state.prompt_tokens = self.budget.used_prompt_tokens
-                state.completion_tokens = self.budget.used_completion_tokens
-                state.estimated_cost_usd = self.budget.estimated_cost_usd
-                checkpoint_mgr.save_state(state.model_dump())
+                self._save_checkpoint(state, checkpoint_mgr)
 
             return state
         except (asyncio.CancelledError, KeyboardInterrupt):
             console.print("\n[bold yellow]Execution cancelled by user. Cleaning up...[/bold yellow]")
-            state.last_error = "Execution cancelled by user"
-            state.current_phase = TDDPhase.FAILED
-            checkpoint_mgr.save_state(state.model_dump())
+            self._save_checkpoint(
+                state, checkpoint_mgr, next_phase=TDDPhase.FAILED, error="Execution cancelled by user"
+            )
             raise
         finally:
             # Clean up isolated worktree unless the run completed successfully and created a commit

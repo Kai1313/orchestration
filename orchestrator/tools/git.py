@@ -1,6 +1,9 @@
 import asyncio
 from pathlib import Path
+from rich.console import Console
 from orchestrator.runners.base import CommandResult
+
+console = Console(stderr=True)
 
 async def run_git(cmd: list[str], cwd: Path) -> CommandResult:
     proc = await asyncio.create_subprocess_exec(
@@ -74,6 +77,11 @@ async def remove_worktree(repo_dir: Path, worktree_path: Path) -> bool:
         if worktree_path.resolve() == repo_dir.resolve():
             return True
         res = await run_git(["worktree", "remove", "--force", str(worktree_path)], cwd=repo_dir)
+        if not res.success:
+            err_msg = res.stderr.strip() or f"exit code {res.exit_code}"
+            console.print(f"[yellow]Warning: Could not remove worktree '{worktree_path}': {err_msg}[/yellow]")
+            return False
+
         await run_git(["worktree", "prune"], cwd=repo_dir)
 
         # Clean up empty parent directories up to .orchestrator/worktrees
@@ -86,6 +94,7 @@ async def remove_worktree(repo_dir: Path, worktree_path: Path) -> bool:
             except OSError:
                 break
 
-        return res.success
-    except Exception:
+        return True
+    except Exception as e:
+        console.print(f"[yellow]Warning: Unexpected error removing worktree '{worktree_path}': {e}[/yellow]")
         return False
