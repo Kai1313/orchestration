@@ -1,0 +1,5 @@
+[project]
+name = "demo-calculator"
+version = "0.1.0"
+description = "Sample demo repository for testing the orchestrator"
+dependencies = []
