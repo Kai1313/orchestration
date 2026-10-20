@@ -63,12 +63,14 @@ class OpenAICompatibleClient:
                             model=data.get("model", self.model),
                         )
                     elif resp.status_code in (429, 500, 502, 503):
-                        await asyncio.sleep(2 ** attempt)
+                        retry_after = resp.headers.get("retry-after")
+                        sleep_time = float(retry_after) if retry_after and retry_after.isdigit() else (4.0 * (attempt + 1))
                         last_error = f"HTTP {resp.status_code}: {resp.text}"
+                        await asyncio.sleep(sleep_time)
                     else:
                         raise RuntimeError(f"API Error {resp.status_code}: {resp.text}")
             except httpx.RequestError as e:
                 last_error = str(e)
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(3.0 * (attempt + 1))
 
         raise RuntimeError(f"Failed to complete LLM request after {max_retries} attempts. Last error: {last_error}")
