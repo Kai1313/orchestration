@@ -1,0 +1,45 @@
+# AI Software Development Orchestrator Configuration
+max_cost_usd: 2.00
+max_tokens: 500000
+test_timeout_seconds: 60
+max_edit_retries: 3
+max_plan_backtracks: 2
+
+providers:
+  deepseek:
+    name: deepseek
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    default_model: deepseek-chat
+  openrouter:
+    name: openrouter
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    default_model: anthropic/claude-3.5-sonnet
+  gemini:
+    name: gemini
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+    api_key_env: GEMINI_API_KEY
+    default_model: gemini-2.5-flash
+  ollama:
+    name: ollama
+    base_url: http://localhost:11434/v1
+    api_key_env: OLLAMA_API_KEY
+    default_model: qwen2.5-coder
+
+roles:
+  triage:
+    provider: gemini
+    model: gemini-2.5-flash
+  reproduce:
+    provider: deepseek
+    model: deepseek-chat
+  planner:
+    provider: deepseek
+    model: deepseek-chat
+  coder:
+    provider: openrouter
+    model: anthropic/claude-3.5-sonnet
+  reviewer:
+    provider: deepseek
+    model: deepseek-chat
