@@ -45,3 +45,20 @@ def test_calc_broken():
     filename, code = parsed
     assert filename == "tests/test_issue_42.py"
     assert "def test_calc_broken" in code
+
+
+def test_parse_tool_call_edits():
+    from orchestrator.providers.protocol import parse_tool_call_edits
+    tool_calls = [{
+        "id": "call_123",
+        "type": "function",
+        "function": {
+            "name": "apply_search_replace_edits",
+            "arguments": '{"edits": [{"file_path": "src/app.py", "search_content": "old_code()", "replace_content": "new_code()"}]}'
+        }
+    }]
+    chunks = parse_tool_call_edits(tool_calls)
+    assert len(chunks) == 1
+    assert chunks[0].file_path == "src/app.py"
+    assert chunks[0].search_content == "old_code()"
+    assert chunks[0].replace_content == "new_code()"

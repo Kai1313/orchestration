@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 import time
-from orchestrator.runners.base import ExecutionEnvironment, CommandResult
+from orchestrator.runners.base import ExecutionEnvironment, CommandResult, collect_workspace_files
 from orchestrator.core.safety import is_path_confined, is_command_safe
 
 class LocalHostRunner(ExecutionEnvironment):
@@ -91,14 +91,5 @@ class LocalHostRunner(ExecutionEnvironment):
             return False
 
     async def list_files(self, relative_dir: str = ".") -> list[str]:
-        safe_dir = self._resolve_safe_path(relative_dir)
-        if not safe_dir.exists() or not safe_dir.is_dir():
-            return []
-        files = []
-        for p in safe_dir.rglob("*"):
-            if p.is_file():
-                # Avoid listing git internals or cache dirs
-                rel = str(p.relative_to(self.workspace_dir)).replace("\\", "/")
-                if not any(part.startswith(".") for part in rel.split("/")):
-                    files.append(rel)
-        return files
+        self._resolve_safe_path(relative_dir)
+        return collect_workspace_files(self.workspace_dir, relative_dir)

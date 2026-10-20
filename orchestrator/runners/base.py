@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 
 @dataclass
 class CommandResult:
@@ -11,6 +12,22 @@ class CommandResult:
     @property
     def success(self) -> bool:
         return self.exit_code == 0
+
+
+def collect_workspace_files(workspace_dir: Path, relative_dir: str = ".") -> list[str]:
+    """
+    Shared helper to collect non-hidden files relative to workspace_dir.
+    """
+    target_dir = (workspace_dir / relative_dir).resolve()
+    if not target_dir.exists() or not target_dir.is_dir():
+        return []
+    files = []
+    for p in target_dir.rglob("*"):
+        if p.is_file():
+            rel = str(p.relative_to(workspace_dir)).replace("\\", "/")
+            if not any(part.startswith(".") for part in rel.split("/")):
+                files.append(rel)
+    return files
 
 
 class ExecutionEnvironment(ABC):

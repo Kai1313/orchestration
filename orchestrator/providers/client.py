@@ -10,16 +10,17 @@ class LLMResponse:
     completion_tokens: int
     finish_reason: str
     model: str
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 class OpenAICompatibleClient:
     """
     Universal async client communicating with any OpenAI-compatible completions endpoint:
     DeepSeek, OpenRouter, Gemini (OpenAI endpoint), Ollama, vLLM.
+    Supports both text completions and native JSON tool/function calling.
     """
 
     def __init__(self, base_url: str, api_key: str, model: str, timeout: float = 90.0):
-        # Normalize base_url to ensure it doesn't duplicate /v1
         base = base_url.rstrip("/")
         if not base.endswith("/v1"):
             self.endpoint = f"{base}/v1/chat/completions"
@@ -34,17 +35,23 @@ class OpenAICompatibleClient:
         self,
         messages: list[dict[str, Any]],
         temperature: float = 0.2,
-        max_retries: int = 3,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        max_retries: int = 4,
     ) -> LLMResponse:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
         }
+        if tools:
+            payload["tools"] = tools
+        if tool_choice:
+            payload["tool_choice"] = tool_choice
 
         last_error = None
         for attempt in range(max_retries):
@@ -54,13 +61,15 @@ class OpenAICompatibleClient:
                     if resp.status_code == 200:
                         data = resp.json()
                         choice = data["choices"][0]
+                        message = choice.get("message", {})
                         usage = data.get("usage", {})
                         return LLMResponse(
-                            content=choice["message"].get("content") or "",
+                            content=message.get("content") or "",
                             prompt_tokens=usage.get("prompt_tokens", 0),
                             completion_tokens=usage.get("completion_tokens", 0),
                             finish_reason=choice.get("finish_reason", "stop"),
                             model=data.get("model", self.model),
+                            tool_calls=message.get("tool_calls"),
                         )
                     elif resp.status_code in (429, 500, 502, 503):
                         retry_after = resp.headers.get("retry-after")

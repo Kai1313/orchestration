@@ -23,6 +23,8 @@ def solve(
     issue: str = typer.Option(..., "--issue", "-i", help="Issue description or path to a markdown issue file"),
     repo: str = typer.Option(".", "--repo", "-r", help="Path to repository"),
     sandbox: str = typer.Option("local", "--sandbox", "-s", help="Execution environment: 'local' or 'docker'"),
+    docker_image: str = typer.Option(None, "--docker-image", help="Docker base image (e.g. node:20-slim, python:3.11-slim)"),
+    interactive: bool = typer.Option(False, "--interactive", "-it", help="Enable interactive breakpoints on failure and PR approval"),
     resume: str = typer.Option(None, "--resume", help="Resume an existing run_id from checkpoint"),
     test_cmd: str = typer.Option(None, "--test-cmd", help="Override auto-detected test command"),
     config_file: str = typer.Option(None, "--config", "-c", help="Path to orchestrator.yaml configuration"),
@@ -44,17 +46,19 @@ def solve(
         f"[bold green]AI Software Development Orchestrator[/bold green]\n"
         f"Target Repo: {repo_path}\n"
         f"Sandbox: {sandbox}\n"
+        f"Interactive Mode: {interactive}\n"
         f"Issue: {issue_content[:120]}...",
         title="Session Started",
     ))
 
-    engine = OrchestrationEngine(cfg)
+    engine = OrchestrationEngine(cfg, interactive=interactive)
     state = asyncio.run(engine.run(
         repo_path=repo_path,
         issue_text=issue_content,
         sandbox=sandbox,
         resume_run_id=resume,
         test_cmd_override=test_cmd,
+        docker_image_override=docker_image,
     ))
 
     if state.current_phase == TDDPhase.COMPLETED:

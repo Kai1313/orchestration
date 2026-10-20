@@ -36,3 +36,16 @@ async def detect_test_command(runner: ExecutionEnvironment) -> str:
 
     # Default fallback
     return "python -m pytest -o pythonpath=."
+
+
+async def detect_docker_image(runner: ExecutionEnvironment) -> str:
+    """
+    Probes repository manifests to pick the appropriate base Docker image.
+    """
+    if await runner.file_exists("package.json"):
+        return "node:20-slim"
+    if await runner.file_exists("Cargo.toml"):
+        return "rust:latest"
+    if await runner.file_exists("go.mod"):
+        return "golang:1.22-alpine"
+    return "python:3.11-slim"

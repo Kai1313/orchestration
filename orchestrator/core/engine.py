@@ -6,15 +6,27 @@ from orchestrator.config import OrchestratorConfig
 from orchestrator.core.state import OrchestrationState, TDDPhase
 from orchestrator.core.context import TokenBudget, slice_error_log
 from orchestrator.core.checkpoint import CheckpointManager
+from orchestrator.core.prompts import (
+    build_triage_prompt,
+    build_reproduce_prompt,
+    build_plan_prompt,
+    build_edit_prompt,
+    build_review_prompt,
+    APPLY_EDITS_TOOL_SCHEMA,
+)
 from orchestrator.runners.base import ExecutionEnvironment
 from orchestrator.runners.local import LocalHostRunner
 from orchestrator.runners.docker import DockerRunner
-from orchestrator.runners.detector import detect_test_command
+from orchestrator.runners.detector import detect_test_command, detect_docker_image
 from orchestrator.tools.repomap import generate_repo_map
 from orchestrator.tools.edit import apply_atomic_edits, EditError
 from orchestrator.tools.git import create_worktree, get_git_diff, reset_git_hard, commit_worktree, ensure_git_repo
 from orchestrator.providers.router import ModelRouter
-from orchestrator.providers.protocol import parse_search_replace_blocks, parse_reproduction_script
+from orchestrator.providers.protocol import (
+    parse_search_replace_blocks,
+    parse_tool_call_edits,
+    parse_reproduction_script,
+)
 
 console = Console()
 
@@ -23,8 +35,9 @@ class OrchestrationEngine:
     Central coordinator driving the 5-Stage TDD State Machine.
     """
 
-    def __init__(self, config: OrchestratorConfig):
+    def __init__(self, config: OrchestratorConfig, interactive: bool = False):
         self.config = config
+        self.interactive = interactive
         self.router = ModelRouter(config)
         self.budget = TokenBudget(
             max_tokens=config.max_tokens,
@@ -38,6 +51,7 @@ class OrchestrationEngine:
         sandbox: str = "local",
         resume_run_id: str | None = None,
         test_cmd_override: str | None = None,
+        docker_image_override: str | None = None,
     ) -> OrchestrationState:
         repo_dir = Path(repo_path).resolve()
         run_id = resume_run_id or f"run_{uuid.uuid4().hex[:8]}"
@@ -71,8 +85,14 @@ class OrchestrationEngine:
         # 3. Instantiate Runner
         runner: ExecutionEnvironment
         if sandbox == "docker":
-            console.print("[blue]Execution runner: Docker Container[/blue]")
-            runner = DockerRunner(active_workspace)
+            probe_runner = LocalHostRunner(active_workspace)
+            image = (
+                docker_image_override
+                or self.config.docker_image
+                or await detect_docker_image(probe_runner)
+            )
+            console.print(f"[blue]Execution runner: Docker Container ({image})[/blue]")
+            runner = DockerRunner(active_workspace, image=image)
         else:
             console.print("[blue]Execution runner: Local Host[/blue]")
             runner = LocalHostRunner(active_workspace)
@@ -120,14 +140,7 @@ class OrchestrationEngine:
 
     async def _phase_triage(self, state: OrchestrationState, runner: ExecutionEnvironment):
         repo_map = await generate_repo_map(runner)
-        prompt = (
-            f"You are the Lead Triage Architect.\n\n"
-            f"## Issue Description:\n{state.issue_text}\n\n"
-            f"## Repository Map:\n{repo_map}\n\n"
-            f"Analyze the repository structure and issue. Identify:\n"
-            f"1. Which files are most likely responsible for the issue.\n"
-            f"2. What behavior needs to be tested in the reproduction test."
-        )
+        prompt = build_triage_prompt(state.issue_text, repo_map)
         client = self.router.get_client_for_role("triage")
         resp = await client.complete([{"role": "user", "content": prompt}])
         self.budget.add_usage(resp.prompt_tokens, resp.completion_tokens)
@@ -135,15 +148,7 @@ class OrchestrationEngine:
         state.current_phase = TDDPhase.REPRODUCE
 
     async def _phase_reproduce(self, state: OrchestrationState, runner: ExecutionEnvironment):
-        prompt = (
-            f"You are the Test Engineer. Write a reproduction test case for this issue:\n\n"
-            f"{state.issue_text}\n\n"
-            f"Output the test file inside a code block, for example:\n"
-            f"```python:tests/test_reproduce_issue.py\n"
-            f"# test code that triggers the bug\n"
-            f"```\n"
-            f"The test MUST FAIL (Red) on the current buggy codebase."
-        )
+        prompt = build_reproduce_prompt(state.issue_text)
         client = self.router.get_client_for_role("reproduce")
         resp = await client.complete([{"role": "user", "content": prompt}])
         self.budget.add_usage(resp.prompt_tokens, resp.completion_tokens)
@@ -164,12 +169,11 @@ class OrchestrationEngine:
         state.current_phase = TDDPhase.PLAN
 
     async def _phase_plan(self, state: OrchestrationState, runner: ExecutionEnvironment):
-        prompt = (
-            f"You are the Systems Architect. Review the bug and reproduction error:\n\n"
-            f"Issue: {state.issue_text}\n"
-            f"Reproduction Test: {state.reproduce_test_path}\n"
-            f"Error Output:\n{state.failing_test_output}\n\n"
-            f"Formulate a surgical, step-by-step implementation plan. List the exact files and functions to modify."
+        prompt = build_plan_prompt(
+            state.issue_text,
+            state.reproduce_test_path,
+            state.failing_test_output,
+            human_hint=state.human_hint,
         )
         client = self.router.get_client_for_role("planner")
         resp = await client.complete([{"role": "user", "content": prompt}])
@@ -182,28 +186,37 @@ class OrchestrationEngine:
         state.edit_attempt += 1
         console.print(f"[blue]Edit attempt #{state.edit_attempt} (Max {self.config.max_edit_retries})[/blue]")
 
-        prompt = (
-            f"You are the Core Coder. Apply surgical edits to fix the issue according to the plan:\n\n"
-            f"{state.plan_summary}\n\n"
-            f"Output your edits using EXACT SEARCH/REPLACE blocks formatted like this:\n\n"
-            f"FILE: src/example.py\n"
-            f"<<<<<<< SEARCH\n"
-            f"exact lines to replace\n"
-            f"=======\n"
-            f"new replacement lines\n"
-            f">>>>>>> REPLACE"
+        role_cfg = self.config.roles.get("coder")
+        protocol = role_cfg.protocol if role_cfg else "delimited_blocks"
+
+        prompt = build_edit_prompt(
+            state.plan_summary,
+            last_error=state.last_error,
+            human_hint=state.human_hint,
+            protocol=protocol,
         )
-        if state.last_error:
-            prompt += f"\n\nPrevious failure to correct:\n{state.last_error}"
 
         client = self.router.get_client_for_role("coder")
-        resp = await client.complete([{"role": "user", "content": prompt}])
-        self.budget.add_usage(resp.prompt_tokens, resp.completion_tokens)
 
-        chunks = parse_search_replace_blocks(resp.content)
+        if protocol == "json_tools":
+            resp = await client.complete(
+                [{"role": "user", "content": prompt}],
+                tools=[APPLY_EDITS_TOOL_SCHEMA],
+                tool_choice="auto",
+            )
+            self.budget.add_usage(resp.prompt_tokens, resp.completion_tokens)
+            chunks = parse_tool_call_edits(resp.tool_calls or [])
+            if not chunks:
+                # Fallback to text parsing in case model emitted markdown blocks
+                chunks = parse_search_replace_blocks(resp.content)
+        else:
+            resp = await client.complete([{"role": "user", "content": prompt}])
+            self.budget.add_usage(resp.prompt_tokens, resp.completion_tokens)
+            chunks = parse_search_replace_blocks(resp.content)
+
         if not chunks:
-            state.last_error = "No valid SEARCH/REPLACE blocks found in model response."
-            state.current_phase = TDDPhase.VERIFY  # Will trigger verify failure loop
+            state.last_error = "No valid edits found in model response."
+            state.current_phase = TDDPhase.VERIFY  # Triggers verify failure loop
             return
 
         try:
@@ -234,6 +247,23 @@ class OrchestrationEngine:
         error_slice = slice_error_log(res.stderr or res.stdout)
         state.last_error = error_slice
 
+        # Interactive human breakpoint on failure
+        if self.interactive:
+            console.print("\n[bold yellow]-- INTERACTIVE BREAKPOINT: VERIFICATION FAILURE --[/bold yellow]")
+            action = input("Action: [c]ontinue with hint, [r]eset to plan, [a]bort? (c/r/a): ").strip().lower()
+            if action == "a":
+                state.current_phase = TDDPhase.FAILED
+                return
+            elif action == "r":
+                await reset_git_hard(active_workspace)
+                state.edit_attempt = 0
+                state.current_phase = TDDPhase.PLAN
+                return
+            else:
+                hint = input("Enter guidance hint for the coder (press Enter to skip): ").strip()
+                if hint:
+                    state.human_hint = hint
+
         # Check inner edit loop limit
         if state.edit_attempt < self.config.max_edit_retries:
             console.print(f"[yellow]Retrying edit loop ({state.edit_attempt}/{self.config.max_edit_retries})...[/yellow]")
@@ -256,15 +286,21 @@ class OrchestrationEngine:
 
     async def _phase_review(self, state: OrchestrationState, runner: ExecutionEnvironment, active_workspace: Path):
         diff = await get_git_diff(active_workspace)
-        prompt = (
-            f"You are the Staff Code Reviewer. Review the verified git diff against the issue prompt:\n\n"
-            f"Issue: {state.issue_text}\n"
-            f"Git Diff:\n{diff}\n\n"
-            f"Generate a Pull Request Title and detailed markdown PR Body summarizing the changes."
-        )
+        prompt = build_review_prompt(state.issue_text, diff)
         client = self.router.get_client_for_role("reviewer")
         resp = await client.complete([{"role": "user", "content": prompt}])
         self.budget.add_usage(resp.prompt_tokens, resp.completion_tokens)
+
+        # Interactive human breakpoint before commit
+        if self.interactive:
+            console.print("\n[bold yellow]-- INTERACTIVE BREAKPOINT: PULL REQUEST REVIEW --[/bold yellow]")
+            console.print(f"[cyan]Git Diff:[/cyan]\n{diff}")
+            confirm = input("Approve and commit this Pull Request? [y/N]: ").strip().lower()
+            if confirm != "y":
+                console.print("[yellow]Pull Request commit cancelled by user.[/yellow]")
+                state.current_phase = TDDPhase.FAILED
+                state.last_error = "PR commit cancelled during interactive review"
+                return
 
         # Commit changes to worktree branch
         commit_msg = f"fix: resolve {state.run_id}\n\n{state.issue_text[:100]}"

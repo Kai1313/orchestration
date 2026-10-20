@@ -1,4 +1,6 @@
+import json
 import re
+from typing import Any
 from orchestrator.tools.edit import EditChunk
 
 # Pattern for SEARCH/REPLACE blocks:
@@ -38,6 +40,29 @@ def parse_search_replace_blocks(text: str) -> list[EditChunk]:
             search_content=search_content,
             replace_content=replace_content,
         ))
+    return chunks
+
+
+def parse_tool_call_edits(tool_calls: list[dict[str, Any]]) -> list[EditChunk]:
+    """
+    Parses EditChunk objects from native OpenAI function tool calls.
+    Supports tool call: apply_search_replace_edits({"edits": [{"file_path": ..., ...}]}).
+    """
+    chunks = []
+    for call in tool_calls:
+        fn = call.get("function", {})
+        if fn.get("name") == "apply_search_replace_edits":
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+                edits = args.get("edits", [])
+                for edit in edits:
+                    chunks.append(EditChunk(
+                        file_path=edit["file_path"],
+                        search_content=edit["search_content"],
+                        replace_content=edit["replace_content"],
+                    ))
+            except Exception:
+                continue
     return chunks
 
 

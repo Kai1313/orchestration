@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 import time
-from orchestrator.runners.base import ExecutionEnvironment, CommandResult
+from orchestrator.runners.base import ExecutionEnvironment, CommandResult, collect_workspace_files
 
 class DockerRunner(ExecutionEnvironment):
     """
@@ -82,13 +82,4 @@ class DockerRunner(ExecutionEnvironment):
         return (self.workspace_dir / path).exists()
 
     async def list_files(self, relative_dir: str = ".") -> list[str]:
-        target_dir = (self.workspace_dir / relative_dir).resolve()
-        if not target_dir.exists() or not target_dir.is_dir():
-            return []
-        files = []
-        for p in target_dir.rglob("*"):
-            if p.is_file():
-                rel = str(p.relative_to(self.workspace_dir)).replace("\\", "/")
-                if not any(part.startswith(".") for part in rel.split("/")):
-                    files.append(rel)
-        return files
+        return collect_workspace_files(self.workspace_dir, relative_dir)

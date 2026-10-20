@@ -20,6 +20,7 @@ class ProviderConfig(BaseModel):
 class RoleConfig(BaseModel):
     provider: str
     model: str
+    protocol: str = "delimited_blocks"  # "delimited_blocks" or "json_tools"
 
 
 DEFAULT_PROVIDERS = {
@@ -66,6 +67,7 @@ class OrchestratorConfig(BaseModel):
     test_timeout_seconds: int = 60
     max_edit_retries: int = 3
     max_plan_backtracks: int = 2
+    docker_image: str | None = None
 
 
 def load_config(config_path: str | Path | None = None) -> OrchestratorConfig:
