@@ -1,6 +1,7 @@
 import uuid
 from pathlib import Path
 from rich.console import Console
+from rich.prompt import Prompt, Confirm
 
 from orchestrator.config import OrchestratorConfig
 from orchestrator.core.state import OrchestrationState, TDDPhase
@@ -250,7 +251,13 @@ class OrchestrationEngine:
         # Interactive human breakpoint on failure
         if self.interactive:
             console.print("\n[bold yellow]-- INTERACTIVE BREAKPOINT: VERIFICATION FAILURE --[/bold yellow]")
-            action = input("Action: [c]ontinue with hint, [r]eset to plan, [a]bort? (c/r/a): ").strip().lower()
+            action = await asyncio.to_thread(
+                Prompt.ask,
+                "Action",
+                choices=["c", "r", "a"],
+                default="c",
+                console=console,
+            )
             if action == "a":
                 state.current_phase = TDDPhase.FAILED
                 return
@@ -260,9 +267,14 @@ class OrchestrationEngine:
                 state.current_phase = TDDPhase.PLAN
                 return
             else:
-                hint = input("Enter guidance hint for the coder (press Enter to skip): ").strip()
-                if hint:
-                    state.human_hint = hint
+                hint = await asyncio.to_thread(
+                    Prompt.ask,
+                    "Enter guidance hint for the coder (optional)",
+                    default="",
+                    console=console,
+                )
+                if hint.strip():
+                    state.human_hint = hint.strip()
 
         # Check inner edit loop limit
         if state.edit_attempt < self.config.max_edit_retries:
@@ -295,8 +307,13 @@ class OrchestrationEngine:
         if self.interactive:
             console.print("\n[bold yellow]-- INTERACTIVE BREAKPOINT: PULL REQUEST REVIEW --[/bold yellow]")
             console.print(f"[cyan]Git Diff:[/cyan]\n{diff}")
-            confirm = input("Approve and commit this Pull Request? [y/N]: ").strip().lower()
-            if confirm != "y":
+            approved = await asyncio.to_thread(
+                Confirm.ask,
+                "Approve and commit this Pull Request?",
+                default=True,
+                console=console,
+            )
+            if not approved:
                 console.print("[yellow]Pull Request commit cancelled by user.[/yellow]")
                 state.current_phase = TDDPhase.FAILED
                 state.last_error = "PR commit cancelled during interactive review"
