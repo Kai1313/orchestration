@@ -199,7 +199,7 @@ class OrchestrationEngine:
             # Clean up isolated worktree unless the run completed successfully and created a commit
             if is_isolated_worktree and state.current_phase != TDDPhase.COMPLETED:
                 console.print(f"[dim]Cleaning up isolated worktree: {active_workspace}[/dim]")
-                await remove_worktree(repo_dir, active_workspace)
+                await remove_worktree(repo_dir, active_workspace, console=console)
 
     async def _phase_triage(self, state: OrchestrationState, runner: ExecutionEnvironment):
         repo_map = await generate_repo_map(runner)
