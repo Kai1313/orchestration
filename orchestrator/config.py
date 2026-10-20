@@ -67,6 +67,7 @@ class OrchestratorConfig(BaseModel):
     test_timeout_seconds: int = 60
     max_edit_retries: int = 3
     max_plan_backtracks: int = 2
+    interactive_timeout: float | None = 300.0
     docker_image: str | None = None
 
 

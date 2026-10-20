@@ -63,3 +63,29 @@ async def commit_worktree(repo_dir: Path, message: str) -> str:
         return ""
     hash_res = await run_git(["rev-parse", "HEAD"], cwd=repo_dir)
     return hash_res.stdout.strip()
+
+
+async def remove_worktree(repo_dir: Path, worktree_path: Path) -> bool:
+    """
+    Safely removes a git worktree and prunes worktree tracking.
+    Never removes or damages repo_dir itself.
+    """
+    try:
+        if worktree_path.resolve() == repo_dir.resolve():
+            return True
+        res = await run_git(["worktree", "remove", "--force", str(worktree_path)], cwd=repo_dir)
+        await run_git(["worktree", "prune"], cwd=repo_dir)
+
+        # Clean up empty parent directories up to .orchestrator/worktrees
+        parent = worktree_path.parent
+        worktrees_root = (repo_dir / ".orchestrator" / "worktrees").resolve()
+        while parent != worktrees_root and parent.is_relative_to(worktrees_root):
+            try:
+                parent.rmdir()
+                parent = parent.parent
+            except OSError:
+                break
+
+        return res.success
+    except Exception:
+        return False

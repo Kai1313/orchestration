@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 from pathlib import Path
+from typing import Any
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
 
@@ -22,7 +23,14 @@ from orchestrator.runners.docker import DockerRunner
 from orchestrator.runners.detector import detect_test_command, detect_docker_image
 from orchestrator.tools.repomap import generate_repo_map
 from orchestrator.tools.edit import apply_atomic_edits, EditError
-from orchestrator.tools.git import create_worktree, get_git_diff, reset_git_hard, commit_worktree, ensure_git_repo
+from orchestrator.tools.git import (
+    create_worktree,
+    get_git_diff,
+    reset_git_hard,
+    commit_worktree,
+    ensure_git_repo,
+    remove_worktree,
+)
 from orchestrator.providers.router import ModelRouter
 from orchestrator.providers.protocol import (
     parse_search_replace_blocks,
@@ -45,6 +53,26 @@ class OrchestrationEngine:
             max_tokens=config.max_tokens,
             max_cost_usd=config.max_cost_usd,
         )
+
+    async def _prompt_with_timeout(
+        self, prompt_func: Any, *args: Any, default_val: Any = None, **kwargs: Any
+    ) -> Any:
+        """
+        Runs a blocking terminal prompt in a worker thread, bounded by interactive_timeout.
+        Falls back to default_val if the timeout expires.
+        """
+        coro = asyncio.to_thread(prompt_func, *args, **kwargs)
+        timeout = getattr(self.config, "interactive_timeout", 300.0)
+        if timeout and timeout > 0:
+            try:
+                return await asyncio.wait_for(coro, timeout=timeout)
+            except asyncio.TimeoutError:
+                console.print(
+                    f"\n[bold yellow]Interactive prompt timed out after {timeout}s. "
+                    f"Proceeding automatically with default: '{default_val}'[/bold yellow]"
+                )
+                return default_val
+        return await coro
 
     async def run(
         self,
@@ -76,69 +104,86 @@ class OrchestrationEngine:
                 worktree_branch=branch_name,
             )
 
-        # 2. Setup isolated Git worktree if git repo
-        is_git = await ensure_git_repo(repo_dir)
-        if is_git:
-            console.print(f"[blue]Setting up isolated worktree for branch: {state.worktree_branch}[/blue]")
-            active_workspace = await create_worktree(repo_dir, state.worktree_branch or "fix/issue")
-        else:
-            active_workspace = repo_dir
+        active_workspace = repo_dir
+        is_isolated_worktree = False
 
-        # 3. Instantiate Runner
-        runner: ExecutionEnvironment
-        if sandbox == "docker":
-            probe_runner = LocalHostRunner(active_workspace)
-            image = (
-                docker_image_override
-                or self.config.docker_image
-                or await detect_docker_image(probe_runner)
-            )
-            console.print(f"[blue]Execution runner: Docker Container ({image})[/blue]")
-            runner = DockerRunner(active_workspace, image=image)
-        else:
-            console.print("[blue]Execution runner: Local Host[/blue]")
-            runner = LocalHostRunner(active_workspace)
+        try:
+            # 2. Setup isolated Git worktree if git repo
+            is_git = await ensure_git_repo(repo_dir)
+            if is_git:
+                console.print(f"[blue]Setting up isolated worktree for branch: {state.worktree_branch}[/blue]")
+                active_workspace = await create_worktree(repo_dir, state.worktree_branch or "fix/issue")
+                if active_workspace.resolve() != repo_dir.resolve():
+                    is_isolated_worktree = True
+            else:
+                active_workspace = repo_dir
 
-        # 4. Auto-detect test runner if not overridden
-        if test_cmd_override:
-            state.test_command = test_cmd_override
-        elif not resume_run_id:
-            state.test_command = await detect_test_command(runner)
-        console.print(f"[green]Using test command: '{state.test_command}'[/green]")
+            # 3. Instantiate Runner
+            runner: ExecutionEnvironment
+            if sandbox == "docker":
+                probe_runner = LocalHostRunner(active_workspace)
+                image = (
+                    docker_image_override
+                    or self.config.docker_image
+                    or await detect_docker_image(probe_runner)
+                )
+                console.print(f"[blue]Execution runner: Docker Container ({image})[/blue]")
+                runner = DockerRunner(active_workspace, image=image)
+            else:
+                console.print("[blue]Execution runner: Local Host[/blue]")
+                runner = LocalHostRunner(active_workspace)
 
-        # 5. Execute State Machine Phases
-        while state.current_phase not in (TDDPhase.COMPLETED, TDDPhase.FAILED):
-            exceeded, reason = self.budget.is_exceeded()
-            if exceeded:
-                state.last_error = reason
-                state.current_phase = TDDPhase.FAILED
+            # 4. Auto-detect test runner if not overridden
+            if test_cmd_override:
+                state.test_command = test_cmd_override
+            elif not resume_run_id:
+                state.test_command = await detect_test_command(runner)
+            console.print(f"[green]Using test command: '{state.test_command}'[/green]")
+
+            # 5. Execute State Machine Phases
+            while state.current_phase not in (TDDPhase.COMPLETED, TDDPhase.FAILED):
+                exceeded, reason = self.budget.is_exceeded()
+                if exceeded:
+                    state.last_error = reason
+                    state.current_phase = TDDPhase.FAILED
+                    checkpoint_mgr.save_state(state.model_dump())
+                    console.print(f"[bold red]{reason}[/bold red]")
+                    break
+
+                console.print(f"\n[bold cyan]> Entering Phase: {state.current_phase.upper()}[/bold cyan]")
                 checkpoint_mgr.save_state(state.model_dump())
-                console.print(f"[bold red]{reason}[/bold red]")
-                break
 
-            console.print(f"\n[bold cyan]> Entering Phase: {state.current_phase.upper()}[/bold cyan]")
+                if state.current_phase == TDDPhase.TRIAGE:
+                    await self._phase_triage(state, runner)
+                elif state.current_phase == TDDPhase.REPRODUCE:
+                    await self._phase_reproduce(state, runner)
+                elif state.current_phase == TDDPhase.PLAN:
+                    await self._phase_plan(state, runner)
+                elif state.current_phase == TDDPhase.EDIT:
+                    await self._phase_edit(state, runner)
+                elif state.current_phase == TDDPhase.VERIFY:
+                    await self._phase_verify(state, runner, active_workspace)
+                elif state.current_phase == TDDPhase.REVIEW:
+                    await self._phase_review(state, runner, active_workspace)
+
+                # Persist state after each step
+                state.prompt_tokens = self.budget.used_prompt_tokens
+                state.completion_tokens = self.budget.used_completion_tokens
+                state.estimated_cost_usd = self.budget.estimated_cost_usd
+                checkpoint_mgr.save_state(state.model_dump())
+
+            return state
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            console.print("\n[bold yellow]Execution cancelled by user. Cleaning up...[/bold yellow]")
+            state.last_error = "Execution cancelled by user"
+            state.current_phase = TDDPhase.FAILED
             checkpoint_mgr.save_state(state.model_dump())
-
-            if state.current_phase == TDDPhase.TRIAGE:
-                await self._phase_triage(state, runner)
-            elif state.current_phase == TDDPhase.REPRODUCE:
-                await self._phase_reproduce(state, runner)
-            elif state.current_phase == TDDPhase.PLAN:
-                await self._phase_plan(state, runner)
-            elif state.current_phase == TDDPhase.EDIT:
-                await self._phase_edit(state, runner)
-            elif state.current_phase == TDDPhase.VERIFY:
-                await self._phase_verify(state, runner, active_workspace)
-            elif state.current_phase == TDDPhase.REVIEW:
-                await self._phase_review(state, runner, active_workspace)
-
-            # Persist state after each step
-            state.prompt_tokens = self.budget.used_prompt_tokens
-            state.completion_tokens = self.budget.used_completion_tokens
-            state.estimated_cost_usd = self.budget.estimated_cost_usd
-            checkpoint_mgr.save_state(state.model_dump())
-
-        return state
+            raise
+        finally:
+            # Clean up isolated worktree unless the run completed successfully and created a commit
+            if is_isolated_worktree and state.current_phase != TDDPhase.COMPLETED:
+                console.print(f"[dim]Cleaning up isolated worktree: {active_workspace}[/dim]")
+                await remove_worktree(repo_dir, active_workspace)
 
     async def _phase_triage(self, state: OrchestrationState, runner: ExecutionEnvironment):
         repo_map = await generate_repo_map(runner)
@@ -252,12 +297,13 @@ class OrchestrationEngine:
         # Interactive human breakpoint on failure
         if self.interactive:
             console.print("\n[bold yellow]-- INTERACTIVE BREAKPOINT: VERIFICATION FAILURE --[/bold yellow]")
-            action = await asyncio.to_thread(
+            action = await self._prompt_with_timeout(
                 Prompt.ask,
                 "Action",
                 choices=["c", "r", "a"],
                 default="c",
                 console=console,
+                default_val="c",
             )
             if action == "a":
                 state.current_phase = TDDPhase.FAILED
@@ -268,13 +314,14 @@ class OrchestrationEngine:
                 state.current_phase = TDDPhase.PLAN
                 return
             else:
-                hint = await asyncio.to_thread(
+                hint = await self._prompt_with_timeout(
                     Prompt.ask,
                     "Enter guidance hint for the coder (optional)",
                     default="",
                     console=console,
+                    default_val="",
                 )
-                if hint.strip():
+                if hint and hint.strip():
                     state.human_hint = hint.strip()
 
         # Check inner edit loop limit
@@ -308,14 +355,15 @@ class OrchestrationEngine:
         if self.interactive:
             console.print("\n[bold yellow]-- INTERACTIVE BREAKPOINT: PULL REQUEST REVIEW --[/bold yellow]")
             console.print(f"[cyan]Git Diff:[/cyan]\n{diff}")
-            approved = await asyncio.to_thread(
+            approved = await self._prompt_with_timeout(
                 Confirm.ask,
                 "Approve and commit this Pull Request?",
                 default=True,
                 console=console,
+                default_val=False,
             )
             if not approved:
-                console.print("[yellow]Pull Request commit cancelled by user.[/yellow]")
+                console.print("[yellow]Pull Request commit cancelled (or timed out).[/yellow]")
                 state.current_phase = TDDPhase.FAILED
                 state.last_error = "PR commit cancelled during interactive review"
                 return
