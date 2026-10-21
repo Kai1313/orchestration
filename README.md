@@ -1,14 +1,92 @@
 # 🤖 Orchestrator
 
-**Autonomous AI Software Development Orchestration Engine**
+**Autonomous AI Mini Software Office & TDD Orchestration Engine**
 
-An autonomous, deterministic agentic system designed to solve discrete software issues and bugs following a rigorous **Test-Driven Development (TDD) assembly line**. It reproduces defects with failing tests, performs surgical search-and-replace code edits, executes automated verification in isolated environments, and outputs clean Git worktree branches with ready-to-merge Pull Requests.
+An autonomous, deterministic agentic system designed to solve discrete software issues and defects following a rigorous **assembly line of specialized AI desks**. It reproduces defects with failing tests, formulates deep architectural plans, performs surgical code edits, executes automated verification in isolated environments, and outputs clean Git branches with ready-to-merge Pull Requests.
+
+> 📘 **Full Architecture Specification**: Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for complete technical blueprints of all 5 desks, Phase 2 Visual QA, Tier-2 Peer Critique protocols, and state machine internals.
+
+---
+
+## 🏢 The Paradigm: A "Mini Software Office" (vs. IDE Chatbots)
+
+Most AI coding tools (such as Antigravity, Cursor, or ChatGPT) operate as an **interactive, generalist conversational chatbot** bound to an active IDE window. One model attempts to be customer support, software architect, code writer, and tester all at once, leading to token bloat and conversational drift.
+
+**Orchestrator** operates as a **deterministic, headless software office** with specialized desks, strict artifact handoffs, and heterogeneous model routing:
+
+```text
+[ Input: Issue / Bug Report + Screenshot ]
+                    │
+                    ▼
+ ┌──────────────────────────────────────┐
+ │ Desk 1: Triage Engineer              │ ◄── Google Gemini 3.8 Flash (1M Context)
+ │ • AST Repo Map & Ripgrep Parsing     │     Cost: $0.00 (Free Tier)
+ │ • Multimodal Screenshot Inspection   │
+ └──────────────────┬───────────────────┘
+                    │ ── [Target Files & Triage Report] ──
+                    ▼
+ ┌──────────────────────────────────────┐
+ │ Desk 2: QA & Test Engineer           │ ◄── Google Gemini 3.8 Flash
+ │ • Writes Reproduction Test Case      │     Cost: $0.00 (Free Tier)
+ │ • Asserts Failing Behavior (Red)     │
+ └──────────────────┬───────────────────┘
+                    │ ── [Test Script & Failure Trace] ──
+                    ▼
+ ┌──────────────────────────────────────┐
+ │ Desk 3: Systems Architect            │ ◄── DeepSeek-R1 (`deepseek-reasoner`)
+ │ • Deep Chain-of-Thought Reasoning    │     Cost: ~$0.01 - $0.02
+ │ • Surgical Step-by-Step Fix Plan     │
+ └──────────────────┬───────────────────┘
+                    │ ── [Implementation Plan] ──
+                    ▼
+ ┌──────────────────────────────────────┐
+ │ Desk 4: Core Coder                   │ ◄── DeepSeek-V3 (`deepseek-chat`)
+ │ • Injects Disk File Context          │     Cost: ~$0.01 - $0.02
+ │ • Emits Atomic SEARCH/REPLACE Blocks │
+ └──────────────────┬───────────────────┘
+                    │ ── [Atomic Code Edits] ──
+                    ▼
+ ┌──────────────────────────────────────┐
+ │ Verification & Test Execution        │ ◄── Runner (`LocalHost` or `Docker`)
+ └──────────┬───────────────────┬───────┘
+            │                   │
+     [PASS / Green]       [FAIL / Red]
+            │                   │
+            │                   ├── Tier 1: Slices trace ──► Retry Coder (Max 3 attempts)
+            │                   │
+            │                   └── Tier 2: Plan Backtrack (Max 2 backtracks)
+            │                       • Coder files structured Obstacle Report
+            │                       • Git resets hard to pristine state
+            │                       • Architect formulates Post-Mortem Plan v2
+            ▼
+ ┌──────────────────────────────────────┐
+ │ Desk 5: Tech Lead / Reviewer         │ ◄── Google Gemini 3.8 Flash
+ │ • Audits Clean Git Diff              │     Cost: $0.00 (Free Tier)
+ │ • Generates Structured PR Markdown   │
+ │ • Commits to Branch (`fix/run_<id>`) │
+ └──────────────────────────────────────┘
+```
+
+### Architectural Comparison Matrix
+
+| Dimension | Interactive IDE Agent (Antigravity, Cursor) | Orchestrator (Mini Software Office) |
+| :--- | :--- | :--- |
+| **Operating Paradigm** | Interactive pair-programmer engaged in real-time conversational chat. | Headless, unattended assembly line executing a deterministic state machine. |
+| **Control Flow** | Dynamic ReAct tool loop (agent dynamically decides actions based on chat history). | Rigid 5-stage TDD pipeline (`Triage` $\to$ `Reproduce` $\to$ `Plan` $\to$ `Edit` $\to$ `Verify` $\to$ `Review`). |
+| **Environment Binding** | Bound to an active desktop IDE window and human session. | Zero UI dependency. Runs in headless CLI, background workers, Docker containers, or CI/CD pipelines. |
+| **Model Strategy** | Single selected frontier model (Claude 3.7 Sonnet, GPT-4o, etc.). | Heterogeneous cost routing: Free Gemini 3.8 Flash + Low-cost DeepSeek-R1 & V3. |
+| **Token Economics** | Context window swells monotonically with conversational history. | Isolated phase context windows. Total run cost remains bounded at **~$0.03 – $0.05 per bug fix**. |
+| **Handoff Protocol** | Conversational chat ("Thanks, now do this..."). | Strict, schema-validated artifact handoffs (no natural language banter). |
+| **Backtrack Policy** | Open-ended conversational correction. | Formal Two-Tier Backtrack state machine with git rollbacks and peer critique protocols. |
+| **Sandboxing** | Runs with ambient developer terminal permissions. | Configurable `LocalHostRunner` (path jailed, command filter) or `DockerRunner` container sandboxes. |
 
 ---
 
 ## 🌟 Key Features
 
 - **Deterministic 5-Stage TDD State Machine**: Structured assembly line (`Triage` $\to$ `Reproduce` $\to$ `Plan` $\to$ `Surgical Edit` $\to$ `Verify` $\to$ `Review & PR`). Eliminates free-form conversational chatter.
+- **Multimodal Visual Issue Resolution (`--image`)**: Inspects UI bugs and error screenshots using Gemini 3.8 Flash Vision to localize frontend defects.
+- **Web Monorepo Support (`--web`, `--in-place`)**: In-place git branching with automatic view cache invalidation (e.g., `php artisan view:clear`) for rapid live verification against local web servers.
 - **Two-Tier Backtrack Policy**:
   - *Tier 1 (Inner Edit Loop)*: Automatically retries code edits up to 3 times against compiler and test runner error traces.
   - *Tier 2 (Plan Backtrack)*: If edits fail repeatedly, reverts uncommitted Git changes and forces the Planner to rethink its hypothesis from scratch (up to 2 backtracks).
@@ -17,53 +95,11 @@ An autonomous, deterministic agentic system designed to solve discrete software 
   - `DockerRunner`: Ephemeral container execution via Docker Desktop for untrusted codebases.
 - **Hybrid Cost Routing (Paid DeepSeek + 100% Free Gemini)**:
   - Deep architectural planning powered by **DeepSeek-R1** (`deepseek-reasoner`).
-  - Precise code edits synthesized by **DeepSeek-V3 / V4** (`deepseek-chat`).
-  - Large-context repo triage, test generation, and PR review powered by **Google Gemini 2.5 Flash** (100% Free Tier, 1M context).
-- **Dual-Mode Model Protocol**: Seamlessly parses native JSON tool calls or delimited search-and-replace blocks (`<<<<<<< SEARCH ... >>>>>>> REPLACE`) for models like DeepSeek-R1.
-- **Git Worktree Isolation**: Executes all changes inside `.orchestrator/worktrees/<branch>`, leaving your active branch, unstaged files, and working tree pristine.
+  - Precise code edits synthesized by **DeepSeek-V3** (`deepseek-chat`).
+  - Large-context repo triage, test generation, and PR review powered by **Google Gemini 3.8 Flash** (100% Free Tier, 1M context).
+- **Dual-Mode Model Protocol**: Seamlessly parses native JSON tool calls or delimited search-and-replace blocks (`<<<<<<< SEARCH ... >>>>>>> REPLACE`) for reasoning models like DeepSeek-R1.
+- **Git Worktree & In-Place Branching**: Isolated worktrees for background runs, or clean `--in-place` branching for hot-reloading dev environments.
 - **State Persistence & Resumability**: Saves full state after every phase to `.orchestrator/runs/<run_id>/state.json`. Resume anytime via `--resume <run_id>`.
-
----
-
-## 🏗️ Architecture: The 5-Stage TDD Pipeline
-
-```text
-[Input: Issue + Repository]
-            │
-            ▼
-   1. TRIAGE & LOCATE
-   • Scans AST Repo Map (classes, methods, signatures)
-   • Runs ripgrep across codebase
-   • Identifies suspected root-cause files
-            │
-            ▼
-   2. REPRODUCE (TDD Red)
-   • Writes a standalone test reproducing the issue
-   • Executes test command via Runner
-   • Asserts test FAILS (Red)
-            │
-            ▼
-   3. SURGICAL EDIT
-   • DeepSeek-R1 formulates implementation plan
-   • DeepSeek-V3 emits atomic SEARCH/REPLACE blocks
-   • Validates all blocks in memory before disk write
-            │
-            ▼
-   4. VERIFY (Inner Loop)
-   • Runs test suite (e.g., pytest, npm test)
-   │
-   ├── [PASS / Green] ──► Advance to Stage 5
-   │
-   └── [FAIL / Red]   ──► Slices stderr traceback
-                          ├── Retry Edit (Max 3 attempts)
-                          └── If exhausted: Reset Git & Backtrack to Plan (Max 2 attempts)
-            │
-            ▼
-   5. REVIEW & PR
-   • Inspects clean git diff
-   • Generates structured Pull Request Title & Markdown Body
-   • Commits to isolated Git branch
-```
 
 ---
 
@@ -121,32 +157,35 @@ You should see:
 +-----------------------------------------------------------+
 | Role      | Provider | Model             | API Key Status |
 |-----------+----------+-------------------+----------------|
-| triage    | gemini   | gemini-2.5-flash  | Found          |
-| reproduce | gemini   | gemini-2.5-flash  | Found          |
+| triage    | gemini   | gemini-3.8-flash  | Found          |
+| reproduce | gemini   | gemini-3.8-flash  | Found          |
 | planner   | deepseek | deepseek-reasoner | Found          |
 | coder     | deepseek | deepseek-chat     | Found          |
-| reviewer  | gemini   | gemini-2.5-flash  | Found          |
+| reviewer  | gemini   | gemini-3.8-flash  | Found          |
 +-----------------------------------------------------------+
 ```
 
 ---
 
-## 🧪 Try the Included Demo Playground
+## 🧪 Real-World Benchmark: Solving UI Bugs on Live Monorepos
 
-This repository comes with a built-in broken calculator project inside [`examples/demo_calculator`](examples/demo_calculator) (`add()` subtracts instead of adding).
+Orchestrator has been validated on live, real-world full-stack monorepos (such as large Laravel + JavaScript applications).
 
-Run the orchestrator to solve it in one command:
-
+### Example: Fixing Duplicate Modal Eye Icons
 ```powershell
-orchestrator solve --repo examples/demo_calculator --issue "Fix add() in calculator.py which returns a - b instead of a + b"
+orchestrator solve `
+  --repo "C:\laragon\www\customs\labarugi" `
+  --issue "Fitur show hide password pada modal Verifikasi Keamanan, cukup munculkan satu icon saja jika fungsinya sama" `
+  --image "image.png" `
+  --web
 ```
 
-### What Happens:
-1. **Triage**: Detects `calculator.py` using AST Repo Map.
-2. **Reproduce**: Writes `tests/test_reproduce_issue.py` asserting `add(2, 3) == 5`. Test fails (Exit code 1).
-3. **Plan & Edit**: DeepSeek-R1 formulates a surgical fix, and DeepSeek-V3 replaces `return a - b` with `return a + b`.
-4. **Verify**: Test suite runs and passes (Green).
-5. **PR**: Commits the verified fix to branch `fix/run_<id>` and generates a Pull Request summary.
+### Result:
+- **Triage**: Gemini 3.8 Flash inspected the screenshot, parsed the repo AST, pruned `vendor/` and `node_modules/`, and isolated `resources/js/app.js`.
+- **Plan**: DeepSeek-R1 formulated the surgical JavaScript event handler modification.
+- **Edit**: DeepSeek-V3 ingested the verbatim disk content and synthesized atomic search-and-replace blocks.
+- **Cache Hook**: Automatically invalidated `php artisan view:clear`.
+- **Metrics**: Verified, committed to branch `fix/run_fd8f86df`, and merged into Bitbucket `development` for **$0.0387 total spend** across **25,096 tokens**.
 
 ---
 
@@ -172,23 +211,6 @@ orchestrator solve [OPTIONS]
 | `--resume` | | `None` | Resume an interrupted run from checkpoint by its `run_id` |
 | `--test-cmd` | | `None` | Override auto-detected test command (e.g. `"poetry run pytest"`) |
 | `--config` | `-c` | `orchestrator.yaml` | Path to custom YAML configuration file |
-
-#### Example: Solving a Web / UI Issue in a Laravel Monorepo
-```powershell
-orchestrator solve `
-  --repo /path/to/laravel-project `
-  --issue "Fix duplicate show/hide password toggle icons in security verification modal" `
-  --image ./screenshot.png `
-  --web
-```
-```powershell
-orchestrator solve --repo /path/to/untrusted/repo --issue "Fix IndexError in parser" --sandbox docker
-```
-
-#### Example: Resuming an Interrupted Run
-```powershell
-orchestrator solve --repo . --issue "..." --resume run_a1b2c3d4
-```
 
 ---
 
@@ -229,15 +251,15 @@ providers:
     name: gemini
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
     api_key_env: GEMINI_API_KEY
-    default_model: gemini-2.5-flash
+    default_model: gemini-3.8-flash
 
 roles:
   triage:
     provider: gemini
-    model: gemini-2.5-flash
+    model: gemini-3.8-flash
   reproduce:
     provider: gemini
-    model: gemini-2.5-flash
+    model: gemini-3.8-flash
   planner:
     provider: deepseek
     model: deepseek-reasoner
@@ -246,7 +268,7 @@ roles:
     model: deepseek-chat
   reviewer:
     provider: gemini
-    model: gemini-2.5-flash
+    model: gemini-3.8-flash
 ```
 
 ---
@@ -260,6 +282,21 @@ roles:
 
 ---
 
+## 🚀 Phase 2 Roadmap & Architecture
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full design specifications of the upcoming enhancements:
+
+1. **Visual QA Desk (Headless Browser Hybrid)**:
+   - Automated headless Chromium execution via Playwright.
+   - Dual-verification: automated DOM assertions combined with Before/After screenshot diffing using Gemini 3.8 Flash Vision.
+2. **Structured Tier-2 Peer Critique**:
+   - Structured handoff protocol when edit attempts fail: Desk 4 (Coder) files an `Obstacle Report` before git rollback, enabling Desk 3 (Architect) to formulate a targeted `Post-Mortem Plan v2`.
+3. **Mission Control Dashboard**:
+   - **Phase 2A**: Real-time Terminal Live UI (`Rich.Live`) displaying desk statuses, token burn meters, and scrolling git diffs.
+   - **Phase 2B**: Local Web Mission Control (FastAPI/HTML) for job management and visual screenshot comparison.
+
+---
+
 ## 🧪 Running the Test Suite
 
 Run the full unit test suite and deterministic Git fixture harness:
@@ -268,7 +305,7 @@ Run the full unit test suite and deterministic Git fixture harness:
 pytest -v
 ```
 
-All 11 tests run in ~3-4 seconds completely offline without consuming external API tokens.
+All 26 tests run in ~3-5 seconds completely offline without consuming external API tokens.
 
 ---
 
