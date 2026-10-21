@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
+from rich.panel import Panel
 
 from orchestrator.config import OrchestratorConfig
 from orchestrator.core.state import OrchestrationState, TDDPhase
