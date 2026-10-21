@@ -37,15 +37,33 @@ APPLY_EDITS_TOOL_SCHEMA: dict[str, Any] = {
 }
 
 
-def build_triage_prompt(issue_text: str, repo_map: str) -> str:
-    return (
+def build_triage_prompt(
+    issue_text: str,
+    repo_map: str,
+    grep_context: str | None = None,
+    has_image: bool = False,
+) -> str:
+    prompt = (
         f"You are the Lead Triage Architect.\n\n"
         f"## Issue Description:\n{issue_text}\n\n"
-        f"## Repository Map:\n{repo_map}\n\n"
-        f"Analyze the repository structure and issue. Identify:\n"
-        f"1. Which files are most likely responsible for the issue.\n"
-        f"2. What behavior needs to be tested in the reproduction test."
     )
+    if has_image:
+        prompt += (
+            "## Attached Screenshot:\n"
+            "An image attachment is provided. Carefully inspect the visual elements, dialog headers, "
+            "input fields, labels, icons, buttons, and anomalies in the screenshot.\n\n"
+        )
+    prompt += f"## Repository Map:\n{repo_map}\n\n"
+    if grep_context:
+        prompt += f"## Codebase Search Matches:\n{grep_context}\n\n"
+
+    prompt += (
+        "Analyze the repository structure and issue. Identify:\n"
+        "1. Visual Defect Analysis: Detailed summary of what is visually wrong.\n"
+        "2. Suspect Files: Exact file paths most likely responsible (templates, components, styles, or scripts).\n"
+        "3. Targeted Plan: What lines or elements need to be adjusted."
+    )
+    return prompt
 
 
 def build_reproduce_prompt(issue_text: str) -> str:
@@ -65,13 +83,20 @@ def build_plan_prompt(
     reproduce_test_path: str | None,
     failing_test_output: str | None,
     human_hint: str | None = None,
+    triage_analysis: str | None = None,
 ) -> str:
     prompt = (
-        f"You are the Systems Architect. Review the bug and reproduction error:\n\n"
-        f"Issue: {issue_text}\n"
-        f"Reproduction Test: {reproduce_test_path}\n"
-        f"Error Output:\n{failing_test_output}\n\n"
+        f"You are the Systems Architect. Review the bug and technical context:\n\n"
+        f"## Issue:\n{issue_text}\n\n"
     )
+    if triage_analysis:
+        prompt += f"## Triage & Visual Defect Analysis:\n{triage_analysis}\n\n"
+
+    if reproduce_test_path or failing_test_output:
+        prompt += (
+            f"Reproduction Test: {reproduce_test_path}\n"
+            f"Error Output:\n{failing_test_output}\n\n"
+        )
     if human_hint:
         prompt += f"## Developer Guidance / Hint:\n{human_hint}\n\n"
 
@@ -83,12 +108,18 @@ def build_edit_prompt(
     plan_summary: str | None,
     last_error: str | None = None,
     human_hint: str | None = None,
+    file_contexts: dict[str, str] | None = None,
     protocol: str = "delimited_blocks",
 ) -> str:
     prompt = (
         f"You are the Core Coder. Apply surgical edits to fix the issue according to the plan:\n\n"
         f"{plan_summary}\n\n"
     )
+    if file_contexts:
+        prompt += "## Verbatim Target File Contents:\n"
+        for path, content in file_contexts.items():
+            prompt += f"### File: {path}\n```\n{content}\n```\n\n"
+
     if human_hint:
         prompt += f"Developer Guidance / Hint:\n{human_hint}\n\n"
 
@@ -99,7 +130,8 @@ def build_edit_prompt(
         prompt += "Call the `apply_search_replace_edits` function with your list of surgical edits."
     else:
         prompt += (
-            "Output your edits using EXACT SEARCH/REPLACE blocks formatted like this:\n\n"
+            "Output your edits using EXACT SEARCH/REPLACE blocks. The SEARCH block MUST match the verbatim lines "
+            "from the file contents above character-for-character including indentation:\n\n"
             "FILE: src/example.py\n"
             "<<<<<<< SEARCH\n"
             "exact lines to replace\n"

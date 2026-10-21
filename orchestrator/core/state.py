@@ -41,6 +41,12 @@ class OrchestrationState(BaseModel):
     pr_title: str | None = None
     pr_body: str | None = None
     commit_hash: str | None = None
+    image_path: str | None = None
+    triage_analysis: str | None = None
+    target_files: list[str] = Field(default_factory=list)
+    in_place: bool = False
+    skip_verify: bool = False
+    original_branch: str | None = None
     usage: TokenUsage = Field(default_factory=TokenUsage)
 
     @property

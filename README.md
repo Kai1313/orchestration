@@ -163,12 +163,24 @@ orchestrator solve [OPTIONS]
 | :--- | :--- | :--- | :--- |
 | `--repo` | `-r` | `.` | Path to the target repository directory |
 | `--issue` | `-i` | *(required)* | Issue text description **or** path to a `.md` issue file |
+| `--image` | `-img` | `None` | Path to screenshot or visual issue attachment (passed to Gemini vision) |
+| `--web` | | `False` | Web preset (enables in-place editing, skip-verify, and interactive browser preview) |
+| `--in-place` | | `False` | Edit directly in active working tree on a new git branch (for hot-reloading dev servers) |
+| `--skip-verify` | | `False` | Skip automated test reproduction/verification for untested codebases |
 | `--sandbox` | `-s` | `local` | Sandbox mode: `local` (host subprocess) or `docker` (container) |
+| `--interactive` | `-it` | `False` | Enable interactive breakpoints on verification failure and PR review |
 | `--resume` | | `None` | Resume an interrupted run from checkpoint by its `run_id` |
 | `--test-cmd` | | `None` | Override auto-detected test command (e.g. `"poetry run pytest"`) |
 | `--config` | `-c` | `orchestrator.yaml` | Path to custom YAML configuration file |
 
-#### Example: Running in a Docker Container
+#### Example: Solving a Web / UI Issue in a Laravel Monorepo
+```powershell
+orchestrator solve `
+  --repo /path/to/laravel-project `
+  --issue "Fix duplicate show/hide password toggle icons in security verification modal" `
+  --image ./screenshot.png `
+  --web
+```
 ```powershell
 orchestrator solve --repo /path/to/untrusted/repo --issue "Fix IndexError in parser" --sandbox docker
 ```

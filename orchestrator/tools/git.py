@@ -101,3 +101,29 @@ async def remove_worktree(
     except Exception as e:
         c.print(f"[yellow]Warning: Unexpected error removing worktree '{worktree_path}': {e}[/yellow]")
         return False
+
+
+async def is_git_clean(repo_dir: Path) -> bool:
+    """Checks if the working tree has no uncommitted or unstaged changes."""
+    res = await run_git(["status", "--porcelain"], cwd=repo_dir)
+    return res.success and len(res.stdout.strip()) == 0
+
+
+async def get_current_branch(repo_dir: Path) -> str:
+    """Returns the name of the currently checked out branch."""
+    res = await run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir)
+    return res.stdout.strip() if res.success else "main"
+
+
+async def checkout_branch(repo_dir: Path, branch_name: str, create: bool = False) -> bool:
+    """Checks out or creates and checks out a git branch."""
+    cmd = ["checkout", "-b", branch_name] if create else ["checkout", branch_name]
+    res = await run_git(cmd, cwd=repo_dir)
+    return res.success
+
+
+async def delete_branch(repo_dir: Path, branch_name: str, force: bool = True) -> bool:
+    """Deletes a git branch."""
+    flag = "-D" if force else "-d"
+    res = await run_git(["branch", flag, branch_name], cwd=repo_dir)
+    return res.success

@@ -17,11 +17,15 @@ from orchestrator.core.prompts import (
     build_review_prompt,
     APPLY_EDITS_TOOL_SCHEMA,
 )
+import base64
+import mimetypes
+import re
 from orchestrator.runners.base import ExecutionEnvironment
 from orchestrator.runners.local import LocalHostRunner
 from orchestrator.runners.docker import DockerRunner
 from orchestrator.runners.detector import detect_test_command, detect_docker_image
 from orchestrator.tools.repomap import generate_repo_map
+from orchestrator.tools.search import grep_search
 from orchestrator.tools.edit import apply_atomic_edits, EditError
 from orchestrator.tools.git import (
     create_worktree,
@@ -30,6 +34,10 @@ from orchestrator.tools.git import (
     commit_worktree,
     ensure_git_repo,
     remove_worktree,
+    is_git_clean,
+    get_current_branch,
+    checkout_branch,
+    delete_branch,
 )
 from orchestrator.providers.router import ModelRouter
 from orchestrator.providers.protocol import (
@@ -39,6 +47,27 @@ from orchestrator.providers.protocol import (
 )
 
 console = Console()
+
+TRIAGE_STOP_WORDS = frozenset({
+    "this", "that", "with", "from", "have", "must", "should", "could",
+    "cukup", "saja", "jika", "sama", "pada", "untuk", "yang", "akan",
+})
+
+
+async def _collect_mentioned_files(
+    runner: ExecutionEnvironment, content: str, state: OrchestrationState
+) -> None:
+    """
+    Extracts file paths mentioned in LLM text, normalizes Windows path separators,
+    and registers valid workspace files in state.target_files.
+    """
+    for line in content.splitlines():
+        words = re.findall(r'[\w./\\-]+\.(?:blade\.php|php|vue|js|ts|jsx|tsx|css|py|html)', line)
+        for w in words:
+            cleaned = w.strip("`'\",").replace("\\", "/")
+            if await runner.file_exists(cleaned) and cleaned not in state.target_files:
+                state.target_files.append(cleaned)
+
 
 class OrchestrationEngine:
     """
@@ -103,6 +132,9 @@ class OrchestrationEngine:
         resume_run_id: str | None = None,
         test_cmd_override: str | None = None,
         docker_image_override: str | None = None,
+        image_path: str | None = None,
+        in_place: bool = False,
+        skip_verify: bool = False,
     ) -> OrchestrationState:
         repo_dir = Path(repo_path).resolve()
         run_id = resume_run_id or f"run_{uuid.uuid4().hex[:8]}"
@@ -123,19 +155,35 @@ class OrchestrationEngine:
                 repo_path=str(repo_dir),
                 issue_text=issue_text,
                 worktree_branch=branch_name,
+                image_path=image_path,
+                in_place=in_place,
+                skip_verify=skip_verify,
             )
 
         active_workspace = repo_dir
         is_isolated_worktree = False
 
         try:
-            # 2. Setup isolated Git worktree if git repo
+            # 2. Setup Git workspace: in-place branch or isolated worktree
             is_git = await ensure_git_repo(repo_dir)
             if is_git:
-                console.print(f"[blue]Setting up isolated worktree for branch: {state.worktree_branch}[/blue]")
-                active_workspace = await create_worktree(repo_dir, state.worktree_branch or "fix/issue")
-                if active_workspace.resolve() != repo_dir.resolve():
-                    is_isolated_worktree = True
+                if in_place:
+                    clean = await is_git_clean(repo_dir)
+                    if not clean:
+                        raise RuntimeError(
+                            "Working tree has uncommitted changes. Please commit or stash your changes before running with --in-place."
+                        )
+                    state.original_branch = await get_current_branch(repo_dir)
+                    console.print(f"[blue]In-place mode: checking out branch '{state.worktree_branch}' from '{state.original_branch}'[/blue]")
+                    checked_out = await checkout_branch(repo_dir, state.worktree_branch, create=True)
+                    if not checked_out:
+                        raise RuntimeError(f"Failed to checkout in-place branch '{state.worktree_branch}'")
+                    active_workspace = repo_dir
+                else:
+                    console.print(f"[blue]Setting up isolated worktree for branch: {state.worktree_branch}[/blue]")
+                    active_workspace = await create_worktree(repo_dir, state.worktree_branch or "fix/issue")
+                    if active_workspace.resolve() != repo_dir.resolve():
+                        is_isolated_worktree = True
             else:
                 active_workspace = repo_dir
 
@@ -179,7 +227,7 @@ class OrchestrationEngine:
                 elif state.current_phase == TDDPhase.PLAN:
                     await self._phase_plan(state, runner)
                 elif state.current_phase == TDDPhase.EDIT:
-                    await self._phase_edit(state, runner)
+                    await self._phase_edit(state, runner, active_workspace)
                 elif state.current_phase == TDDPhase.VERIFY:
                     await self._phase_verify(state, runner, active_workspace)
                 elif state.current_phase == TDDPhase.REVIEW:
@@ -203,12 +251,60 @@ class OrchestrationEngine:
 
     async def _phase_triage(self, state: OrchestrationState, runner: ExecutionEnvironment):
         repo_map = await generate_repo_map(runner)
-        prompt = build_triage_prompt(state.issue_text, repo_map)
+        has_image = bool(state.image_path and Path(state.image_path).exists())
+
+        # Keyword search: extract potential tokens / keywords from issue text
+        keywords = re.findall(r'"([^"]+)"|([A-Za-z0-9_-]{4,})', state.issue_text)
+        search_terms = []
+        for quoted, word in keywords:
+            term = quoted or word
+            if term and term.lower() not in TRIAGE_STOP_WORDS:
+                search_terms.append(term)
+
+        found_matches = []
+        for term in search_terms[:5]:
+            matches = await grep_search(runner, term, max_results=5)
+            for m in matches:
+                found_matches.append(f"{m['file']}:{m['line_number']} -> {m['line_content']}")
+
+        grep_context = "\n".join(found_matches[:15]) if found_matches else None
+        prompt_text = build_triage_prompt(state.issue_text, repo_map, grep_context=grep_context, has_image=has_image)
+
+        messages = []
+        if has_image:
+            img_path = Path(state.image_path)
+            mime_type, _ = mimetypes.guess_type(str(img_path))
+            mime_type = mime_type or "image/png"
+            b64_data = base64.b64encode(img_path.read_bytes()).decode("utf-8")
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt_text},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{b64_data}"
+                        }
+                    }
+                ]
+            })
+        else:
+            messages.append({"role": "user", "content": prompt_text})
+
         client = self.router.get_client_for_role("triage")
-        resp = await client.complete([{"role": "user", "content": prompt}])
+        resp = await client.complete(messages)
         self.budget.add_usage(resp.prompt_tokens, resp.completion_tokens)
+        state.triage_analysis = resp.content
         console.print("[dim]Triage analysis completed.[/dim]")
-        state.current_phase = TDDPhase.REPRODUCE
+
+        # Extract potential suspect files from triage response
+        await _collect_mentioned_files(runner, resp.content, state)
+
+        if state.skip_verify:
+            console.print("[yellow]Skip-verify enabled: advancing directly to Plan stage.[/yellow]")
+            state.current_phase = TDDPhase.PLAN
+        else:
+            state.current_phase = TDDPhase.REPRODUCE
 
     async def _phase_reproduce(self, state: OrchestrationState, runner: ExecutionEnvironment):
         prompt = build_reproduce_prompt(state.issue_text)
@@ -237,25 +333,39 @@ class OrchestrationEngine:
             state.reproduce_test_path,
             state.failing_test_output,
             human_hint=state.human_hint,
+            triage_analysis=state.triage_analysis,
         )
         client = self.router.get_client_for_role("planner")
         resp = await client.complete([{"role": "user", "content": prompt}])
         self.budget.add_usage(resp.prompt_tokens, resp.completion_tokens)
         state.plan_summary = resp.content
         console.print("[dim]Fix plan formulated.[/dim]")
+
+        # Extract any newly mentioned target files from plan
+        await _collect_mentioned_files(runner, resp.content, state)
+
         state.current_phase = TDDPhase.EDIT
 
-    async def _phase_edit(self, state: OrchestrationState, runner: ExecutionEnvironment):
+    async def _phase_edit(self, state: OrchestrationState, runner: ExecutionEnvironment, active_workspace: Path):
         state.edit_attempt += 1
         console.print(f"[blue]Edit attempt #{state.edit_attempt} (Max {self.config.max_edit_retries})[/blue]")
 
         role_cfg = self.config.roles.get("coder")
         protocol = role_cfg.protocol if role_cfg else "delimited_blocks"
 
+        # Read actual file contexts for identified target files so coder has verbatim reference
+        file_contexts = {}
+        for target_file in state.target_files[:5]:
+            try:
+                file_contexts[target_file] = await runner.read_file(target_file)
+            except Exception:
+                continue
+
         prompt = build_edit_prompt(
             state.plan_summary,
             last_error=state.last_error,
             human_hint=state.human_hint,
+            file_contexts=file_contexts if file_contexts else None,
             protocol=protocol,
         )
 
@@ -270,7 +380,6 @@ class OrchestrationEngine:
             self.budget.add_usage(resp.prompt_tokens, resp.completion_tokens)
             chunks = parse_tool_call_edits(resp.tool_calls or [])
             if not chunks:
-                # Fallback to text parsing in case model emitted markdown blocks
                 chunks = parse_search_replace_blocks(resp.content)
         else:
             resp = await client.complete([{"role": "user", "content": prompt}])
@@ -279,7 +388,14 @@ class OrchestrationEngine:
 
         if not chunks:
             state.last_error = "No valid edits found in model response."
-            state.current_phase = TDDPhase.VERIFY  # Triggers verify failure loop
+            if state.skip_verify:
+                if state.edit_attempt < self.config.max_edit_retries:
+                    console.print("[yellow]Retrying edit formulation...[/yellow]")
+                    state.current_phase = TDDPhase.EDIT
+                else:
+                    state.current_phase = TDDPhase.FAILED
+                return
+            state.current_phase = TDDPhase.VERIFY
             return
 
         try:
@@ -290,8 +406,71 @@ class OrchestrationEngine:
         except EditError as e:
             state.last_error = f"Edit Block Mismatch: {str(e)}"
             console.print(f"[red]{state.last_error}[/red]")
+            if state.skip_verify:
+                if state.edit_attempt < self.config.max_edit_retries:
+                    console.print("[yellow]Retrying edit block...[/yellow]")
+                    state.current_phase = TDDPhase.EDIT
+                else:
+                    state.current_phase = TDDPhase.FAILED
+                return
+            state.current_phase = TDDPhase.VERIFY
+            return
+
+        # Post-edit hook: If Laravel project, clear view cache automatically
+        if await runner.file_exists("artisan"):
+            console.print("[dim]Detected Laravel project: invalidating view cache (php artisan view:clear)...[/dim]")
+            await runner.exec("php artisan view:clear", timeout=15)
+
+        # Skip-verify branch handling
+        if state.skip_verify:
+            if self.interactive:
+                await self._handle_interactive_verification(active_workspace, state)
+            else:
+                state.current_phase = TDDPhase.REVIEW
+            return
 
         state.current_phase = TDDPhase.VERIFY
+
+    async def _handle_interactive_verification(
+        self, active_workspace: Path, state: OrchestrationState
+    ) -> None:
+        """
+        Renders git diff preview and prompts developer to accept, retry with hint, or abort.
+        """
+        diff_text = await get_git_diff(active_workspace)
+        console.print("\n[bold yellow]-- INTERACTIVE PREVIEW: VERIFY EDIT IN BROWSER --[/bold yellow]")
+        if diff_text:
+            console.print(Panel(diff_text[:3000], title="Current Git Diff"))
+        action = await self._prompt_with_timeout(
+            Prompt.ask,
+            "Action [y: Accept & Commit / r: Retry with hint / a: Abort]",
+            choices=["y", "r", "a"],
+            default="y",
+            console=console,
+            default_val="y",
+        )
+        if action == "y":
+            state.current_phase = TDDPhase.REVIEW
+        elif action == "r":
+            await reset_git_hard(active_workspace)
+            hint = await self._prompt_with_timeout(
+                Prompt.ask,
+                "Enter guidance hint for the coder",
+                default="",
+                console=console,
+                default_val="",
+            )
+            state.human_hint = hint.strip() if hint else None
+            state.current_phase = TDDPhase.EDIT
+        elif action == "a":
+            if state.in_place and state.original_branch:
+                console.print(f"[yellow]Aborting: restoring original branch '{state.original_branch}'...[/yellow]")
+                await reset_git_hard(active_workspace)
+                await checkout_branch(active_workspace, state.original_branch)
+                if state.worktree_branch:
+                    await delete_branch(active_workspace, state.worktree_branch, force=True)
+            state.current_phase = TDDPhase.FAILED
+            state.last_error = "Aborted by user during interactive verification"
 
     async def _phase_verify(self, state: OrchestrationState, runner: ExecutionEnvironment, active_workspace: Path):
         # 1. Run reproduction test or full test suite

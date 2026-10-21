@@ -16,17 +16,41 @@ class CommandResult:
 
 def collect_workspace_files(workspace_dir: Path, relative_dir: str = ".") -> list[str]:
     """
-    Shared helper to collect non-hidden files relative to workspace_dir.
+    Shared helper to collect non-hidden files relative to workspace_dir,
+    excluding dependency and build directories (vendor, node_modules, storage, etc.).
     """
+    import os
+
     target_dir = (workspace_dir / relative_dir).resolve()
     if not target_dir.exists() or not target_dir.is_dir():
         return []
+
+    ignore_dirs = {
+        "vendor",
+        "node_modules",
+        "storage",
+        ".git",
+        ".orchestrator",
+        "dist",
+        "build",
+        ".venv",
+        "venv",
+        "__pycache__",
+    }
+
     files = []
-    for p in target_dir.rglob("*"):
-        if p.is_file():
-            rel = str(p.relative_to(workspace_dir)).replace("\\", "/")
-            if not any(part.startswith(".") for part in rel.split("/")):
+    for root, dirs, filenames in os.walk(str(target_dir)):
+        # Prune ignored and hidden directories in-place to avoid deep scanning
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ignore_dirs]
+        for f in filenames:
+            if f.startswith("."):
+                continue
+            full_path = Path(root) / f
+            try:
+                rel = str(full_path.relative_to(workspace_dir)).replace("\\", "/")
                 files.append(rel)
+            except ValueError:
+                continue
     return files
 
 
