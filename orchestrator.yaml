@@ -16,15 +16,15 @@ providers:
     name: gemini
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
     api_key_env: GEMINI_API_KEY
-    default_model: gemini-2.5-flash
+    default_model: gemini-3.8-flash
 
 roles:
   triage:
     provider: gemini
-    model: gemini-2.5-flash       # FREE: 1M context to read large repo maps
+    model: gemini-3.8-flash       # FREE: 1M context to read large repo maps
   reproduce:
     provider: gemini
-    model: gemini-2.5-flash       # FREE: fast test case generation
+    model: gemini-3.8-flash       # FREE: fast test case generation
   planner:
     provider: deepseek
     model: deepseek-reasoner      # PAID: DeepSeek-R1 deep chain-of-thought
@@ -33,4 +33,4 @@ roles:
     model: deepseek-chat          # PAID: DeepSeek-V3 / V4 for fast, precise code edits
   reviewer:
     provider: gemini
-    model: gemini-2.5-flash       # FREE: reads git diff and writes PR summary
+    model: gemini-3.8-flash       # FREE: reads git diff and writes PR summary

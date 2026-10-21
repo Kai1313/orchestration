@@ -40,7 +40,7 @@ DEFAULT_PROVIDERS = {
         name="gemini",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         api_key_env="GEMINI_API_KEY",
-        default_model="gemini-2.5-flash",
+        default_model="gemini-3.8-flash",
     ),
     "ollama": ProviderConfig(
         name="ollama",
@@ -51,7 +51,7 @@ DEFAULT_PROVIDERS = {
 }
 
 DEFAULT_ROLES = {
-    "triage": RoleConfig(provider="gemini", model="gemini-2.5-flash"),
+    "triage": RoleConfig(provider="gemini", model="gemini-3.8-flash"),
     "reproduce": RoleConfig(provider="deepseek", model="deepseek-chat"),
     "planner": RoleConfig(provider="deepseek", model="deepseek-chat"),
     "coder": RoleConfig(provider="openrouter", model="anthropic/claude-3.5-sonnet"),
