@@ -1,52 +1,53 @@
 import asyncio
-import uuid
-from pathlib import Path
-from typing import Any
-from rich.console import Console
-from rich.prompt import Prompt, Confirm
-from rich.panel import Panel
-
-from orchestrator.config import OrchestratorConfig
-from orchestrator.core.state import OrchestrationState, TDDPhase
-from orchestrator.core.context import TokenBudget, slice_error_log
-from orchestrator.core.checkpoint import CheckpointManager
-from orchestrator.core.prompts import (
-    build_triage_prompt,
-    build_reproduce_prompt,
-    build_plan_prompt,
-    build_edit_prompt,
-    build_review_prompt,
-    APPLY_EDITS_TOOL_SCHEMA,
-)
 import base64
 import mimetypes
+from pathlib import Path
 import re
-from orchestrator.runners.base import ExecutionEnvironment
-from orchestrator.runners.local import LocalHostRunner
-from orchestrator.runners.docker import DockerRunner
-from orchestrator.runners.detector import detect_test_command, detect_docker_image
-from orchestrator.tools.repomap import generate_repo_map
-from orchestrator.tools.search import grep_search
-from orchestrator.tools.edit import apply_atomic_edits, EditError
-from orchestrator.tools.git import (
-    create_worktree,
-    get_git_diff,
-    reset_git_hard,
-    commit_worktree,
-    ensure_git_repo,
-    remove_worktree,
-    is_git_clean,
-    get_current_branch,
-    checkout_branch,
-    delete_branch,
-    ensure_orchestrator_ignored,
+from typing import Any
+import uuid
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Confirm, Prompt
+
+from orchestrator.config import OrchestratorConfig
+from orchestrator.core.checkpoint import CheckpointManager
+from orchestrator.core.context import TokenBudget, slice_error_log
+from orchestrator.core.prompts import (
+    APPLY_EDITS_TOOL_SCHEMA,
+    build_edit_prompt,
+    build_plan_prompt,
+    build_reproduce_prompt,
+    build_review_prompt,
+    build_triage_prompt,
 )
-from orchestrator.providers.router import ModelRouter
+from orchestrator.core.state import OrchestrationState, TDDPhase
 from orchestrator.providers.protocol import (
+    parse_reproduction_script,
     parse_search_replace_blocks,
     parse_tool_call_edits,
-    parse_reproduction_script,
 )
+from orchestrator.providers.router import ModelRouter
+from orchestrator.runners.base import ExecutionEnvironment
+from orchestrator.runners.detector import detect_docker_image, detect_test_command
+from orchestrator.runners.docker import DockerRunner
+from orchestrator.runners.local import LocalHostRunner
+from orchestrator.tools.edit import EditError, apply_atomic_edits
+from orchestrator.tools.git import (
+    checkout_branch,
+    commit_worktree,
+    create_worktree,
+    delete_branch,
+    ensure_git_repo,
+    ensure_orchestrator_ignored,
+    get_current_branch,
+    get_git_diff,
+    is_git_clean,
+    remove_worktree,
+    reset_git_hard,
+)
+from orchestrator.tools.repomap import generate_repo_map
+from orchestrator.tools.search import grep_search
 
 console = Console()
 
@@ -69,6 +70,71 @@ async def _collect_mentioned_files(
             cleaned = w.strip("`'\",").replace("\\", "/")
             if await runner.file_exists(cleaned) and cleaned not in state.target_files:
                 state.target_files.append(cleaned)
+
+
+def format_target_test_command(base_cmd: str, test_path: str | None) -> str:
+    """
+    Assembles the final executable test command with test_path targeting.
+    Supports {test_path} template substitution or intelligent appending to the final sub-command.
+    """
+    if not test_path:
+        return base_cmd.replace("{test_path}", "").strip()
+
+    if "{test_path}" in base_cmd:
+        return base_cmd.replace("{test_path}", test_path)
+
+    # If composite command with &&, append test_path to the last command
+    if "&&" in base_cmd:
+        parts = [p.strip() for p in base_cmd.split("&&")]
+        parts[-1] = f"{parts[-1]} {test_path}".strip()
+        return " && ".join(parts)
+
+    return f"{base_cmd} {test_path}".strip()
+
+
+def is_executable_test_file(path_str: str) -> bool:
+    """
+    Deterministically determines if a relative file path is an executable test file.
+    Follows standard framework file naming conventions and rejects support fixtures,
+    setups, and configuration files.
+    """
+    normalized = path_str.replace("\\", "/").lower()
+    basename = normalized.split("/")[-1]
+
+    # Explicit exclusions of support, fixture, and configuration files
+    excluded_names = {
+        "conftest.py",
+        "setup.ts",
+        "setup.js",
+        "jest.config.js",
+        "jest.config.ts",
+        "vitest.config.ts",
+        "vitest.config.js",
+    }
+    if basename in excluded_names:
+        return False
+    if any(x in normalized for x in ("/fixtures/", "/mocks/", "/helpers/")):
+        return False
+
+    # 1. Python test files: test_*.py or *_test.py
+    if basename.endswith(".py") and (basename.startswith("test_") or basename.endswith("_test.py")):
+        return True
+
+    # 2. JavaScript / TypeScript test files: *.test.[jt]sx? or *.spec.[jt]sx?
+    js_ts_exts = (".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs")
+    if any(basename.endswith(ext) for ext in js_ts_exts):
+        if ".test." in basename or ".spec." in basename:
+            return True
+
+    # 3. Go test files: *_test.go
+    if basename.endswith("_test.go"):
+        return True
+
+    # 4. Rust test files: tests/*.rs
+    if basename.endswith(".rs") and ("/tests/" in normalized or normalized.startswith("tests/")):
+        return True
+
+    return False
 
 
 class OrchestrationEngine:
@@ -104,6 +170,7 @@ class OrchestrationEngine:
         state.prompt_tokens = self.budget.used_prompt_tokens
         state.completion_tokens = self.budget.used_completion_tokens
         state.estimated_cost_usd = self.budget.estimated_cost_usd
+        state.active_providers = self.router.get_sticky_state()
         checkpoint_mgr.save_state(state.model_dump())
 
     async def _prompt_with_timeout(
@@ -150,6 +217,8 @@ class OrchestrationEngine:
             if not state_data:
                 raise ValueError(f"Cannot resume: run '{resume_run_id}' not found.")
             state = OrchestrationState(**state_data)
+            if state.active_providers:
+                self.router.restore_sticky_state(state.active_providers)
             console.print(f"[yellow]Resuming run {run_id} from phase {state.current_phase}[/yellow]")
         else:
             branch_name = f"fix/{run_id}"
@@ -184,7 +253,11 @@ class OrchestrationEngine:
                     active_workspace = repo_dir
                 else:
                     console.print(f"[blue]Setting up isolated worktree for branch: {state.worktree_branch}[/blue]")
-                    active_workspace = await create_worktree(repo_dir, state.worktree_branch or "fix/issue")
+                    active_workspace = await create_worktree(
+                        repo_dir,
+                        state.worktree_branch or "fix/issue",
+                        extra_junctions=self.config.worktree_junctions,
+                    )
                     if active_workspace.resolve() != repo_dir.resolve():
                         is_isolated_worktree = True
             else:
@@ -294,14 +367,37 @@ class OrchestrationEngine:
         else:
             messages.append({"role": "user", "content": prompt_text})
 
-        client = self.router.get_client_for_role("triage")
-        resp = await client.complete(messages)
+        resp = await self.router.complete_for_role("triage", messages)
         self.budget.add_usage(resp.prompt_tokens, resp.completion_tokens)
         state.triage_analysis = resp.content
         console.print("[dim]Triage analysis completed.[/dim]")
 
         # Extract potential suspect files from triage response
         await _collect_mentioned_files(runner, resp.content, state)
+
+        # Check for pre-existing failing test fast-path using strict executable conventions
+        existing_test = None
+        for tf in state.target_files:
+            if is_executable_test_file(tf) and await runner.file_exists(tf):
+                existing_test = tf
+                break
+
+        if existing_test and not state.skip_verify:
+            console.print(f"[bold cyan]Triage detected existing test file: '{existing_test}'[/bold cyan]")
+            state.reproduce_test_path = existing_test
+            # Hybrid baseline run
+            baseline_cmd = format_target_test_command(state.test_command, existing_test)
+            console.print(f"[blue]Running baseline verification: '{baseline_cmd}'[/blue]")
+            res = await runner.exec(baseline_cmd, timeout=self.config.test_timeout_seconds)
+            combined_log = f"{res.stdout}\n{res.stderr}".strip()
+            if not res.success:
+                console.print("[green]Baseline failure confirmed (Red). Advancing directly to Plan.[/green]")
+                state.failing_test_output = slice_error_log(combined_log)
+            else:
+                console.print("[yellow]Baseline test passed unexpectedly. Falling back to issue error trace.[/yellow]")
+                state.failing_test_output = slice_error_log(state.issue_text)
+            state.current_phase = TDDPhase.PLAN
+            return
 
         if state.skip_verify:
             console.print("[yellow]Skip-verify enabled: advancing directly to Plan stage.[/yellow]")
@@ -311,8 +407,7 @@ class OrchestrationEngine:
 
     async def _phase_reproduce(self, state: OrchestrationState, runner: ExecutionEnvironment):
         prompt = build_reproduce_prompt(state.issue_text)
-        client = self.router.get_client_for_role("reproduce")
-        resp = await client.complete([{"role": "user", "content": prompt}])
+        resp = await self.router.complete_for_role("reproduce", [{"role": "user", "content": prompt}])
         self.budget.add_usage(resp.prompt_tokens, resp.completion_tokens)
 
         parsed = parse_reproduction_script(resp.content)
@@ -323,9 +418,9 @@ class OrchestrationEngine:
             console.print(f"[green]Created reproduction test: {test_file}[/green]")
 
             # Run test to verify it fails
-            cmd = f"{state.test_command} {test_file}"
+            cmd = format_target_test_command(state.test_command, test_file)
             res = await runner.exec(cmd, timeout=self.config.test_timeout_seconds)
-            state.failing_test_output = slice_error_log(res.stderr or res.stdout)
+            state.failing_test_output = slice_error_log(f"{res.stdout}\n{res.stderr}".strip())
             console.print(f"[dim]Initial test run exit code: {res.exit_code}[/dim]")
         
         state.current_phase = TDDPhase.PLAN
@@ -338,8 +433,7 @@ class OrchestrationEngine:
             human_hint=state.human_hint,
             triage_analysis=state.triage_analysis,
         )
-        client = self.router.get_client_for_role("planner")
-        resp = await client.complete([{"role": "user", "content": prompt}])
+        resp = await self.router.complete_for_role("planner", [{"role": "user", "content": prompt}])
         self.budget.add_usage(resp.prompt_tokens, resp.completion_tokens)
         state.plan_summary = resp.content
         console.print("[dim]Fix plan formulated.[/dim]")
@@ -372,10 +466,9 @@ class OrchestrationEngine:
             protocol=protocol,
         )
 
-        client = self.router.get_client_for_role("coder")
-
         if protocol == "json_tools":
-            resp = await client.complete(
+            resp = await self.router.complete_for_role(
+                "coder",
                 [{"role": "user", "content": prompt}],
                 tools=[APPLY_EDITS_TOOL_SCHEMA],
                 tool_choice="auto",
@@ -385,7 +478,10 @@ class OrchestrationEngine:
             if not chunks:
                 chunks = parse_search_replace_blocks(resp.content)
         else:
-            resp = await client.complete([{"role": "user", "content": prompt}])
+            resp = await self.router.complete_for_role(
+                "coder",
+                [{"role": "user", "content": prompt}],
+            )
             self.budget.add_usage(resp.prompt_tokens, resp.completion_tokens)
             chunks = parse_search_replace_blocks(resp.content)
 
@@ -477,7 +573,7 @@ class OrchestrationEngine:
 
     async def _phase_verify(self, state: OrchestrationState, runner: ExecutionEnvironment, active_workspace: Path):
         # 1. Run reproduction test or full test suite
-        target_cmd = f"{state.test_command} {state.reproduce_test_path}" if state.reproduce_test_path else state.test_command
+        target_cmd = format_target_test_command(state.test_command, state.reproduce_test_path)
         console.print(f"[blue]Running verification: '{target_cmd}'[/blue]")
         res = await runner.exec(target_cmd, timeout=self.config.test_timeout_seconds)
 
@@ -489,7 +585,7 @@ class OrchestrationEngine:
 
         # Verification failed
         console.print(f"[red]Verification FAILED (Exit code {res.exit_code})[/red]")
-        error_slice = slice_error_log(res.stderr or res.stdout)
+        error_slice = slice_error_log(f"{res.stdout}\n{res.stderr}".strip())
         state.last_error = error_slice
 
         # Interactive human breakpoint on failure
@@ -545,8 +641,7 @@ class OrchestrationEngine:
     async def _phase_review(self, state: OrchestrationState, runner: ExecutionEnvironment, active_workspace: Path):
         diff = await get_git_diff(active_workspace)
         prompt = build_review_prompt(state.issue_text, diff)
-        client = self.router.get_client_for_role("reviewer")
-        resp = await client.complete([{"role": "user", "content": prompt}])
+        resp = await self.router.complete_for_role("reviewer", [{"role": "user", "content": prompt}])
         self.budget.add_usage(resp.prompt_tokens, resp.completion_tokens)
 
         # Interactive human breakpoint before commit
@@ -574,3 +669,14 @@ class OrchestrationEngine:
         state.pr_title = f"Fix: {state.issue_text[:60]}"
         state.current_phase = TDDPhase.COMPLETED
         console.print(f"[bold green][OK] PR Prepared! Commit: {commit_hash}[/bold green]")
+
+        # Auto-merge if configured and running in-place
+        if getattr(self.config, "auto_merge", False) and state.in_place and state.original_branch:
+            console.print(f"[blue]Auto-merge enabled: checking out '{state.original_branch}' and merging '{state.worktree_branch}'...[/blue]")
+            await checkout_branch(active_workspace, state.original_branch)
+            res_merge = await run_git(["merge", state.worktree_branch], cwd=active_workspace)
+            if res_merge.success:
+                console.print(f"[bold green][OK] Successfully merged '{state.worktree_branch}' into '{state.original_branch}'![/bold green]")
+            else:
+                console.print(f"[yellow]Auto-merge warning: {res_merge.stderr.strip()}[/yellow]")
+

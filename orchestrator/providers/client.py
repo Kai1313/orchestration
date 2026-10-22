@@ -13,6 +13,13 @@ class LLMResponse:
     tool_calls: list[dict[str, Any]] | None = None
 
 
+class ProviderFatalError(RuntimeError):
+    """Raised when an LLM provider returns a fatal or high-demand status code (401, 429, 503)."""
+    def __init__(self, status_code: int, message: str):
+        super().__init__(f"ProviderFatalError {status_code}: {message}")
+        self.status_code = status_code
+
+
 class OpenAICompatibleClient:
     """
     Universal async client communicating with any OpenAI-compatible completions endpoint:
@@ -71,7 +78,10 @@ class OpenAICompatibleClient:
                             model=data.get("model", self.model),
                             tool_calls=message.get("tool_calls"),
                         )
-                    elif resp.status_code in (429, 500, 502, 503):
+                    elif resp.status_code in (401, 429, 503):
+                        # Instant failover status codes (quota exhausted, invalid key, or high demand)
+                        raise ProviderFatalError(resp.status_code, resp.text)
+                    elif resp.status_code in (500, 502):
                         retry_after = resp.headers.get("retry-after")
                         sleep_time = float(retry_after) if retry_after and retry_after.isdigit() else (4.0 * (attempt + 1))
                         last_error = f"HTTP {resp.status_code}: {resp.text}"

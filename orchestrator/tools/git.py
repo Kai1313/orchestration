@@ -1,5 +1,8 @@
 import asyncio
+import os
 from pathlib import Path
+import stat
+import sys
 from rich.console import Console
 from orchestrator.runners.base import CommandResult
 
@@ -63,9 +66,66 @@ def ensure_orchestrator_ignored(repo_dir: Path) -> None:
         pass
 
 
-async def create_worktree(repo_dir: Path, branch_name: str) -> Path:
+STANDARD_JUNCTION_DIRS = ["node_modules", ".venv", "venv", "vendor"]
+
+def mount_worktree_junctions(repo_dir: Path, worktree_path: Path, extra_dirs: list[str] | None = None) -> list[Path]:
+    """
+    Mounts dependency directories from repo_dir into worktree_path using OS directory junctions
+    (Windows) or symlinks (POSIX). Returns list of successfully linked paths.
+    """
+    candidates = list(STANDARD_JUNCTION_DIRS)
+    if extra_dirs:
+        candidates.extend(extra_dirs)
+
+    linked = []
+    for dir_name in set(candidates):
+        src = (repo_dir / dir_name).resolve()
+        dst = (worktree_path / dir_name).resolve()
+        if src.is_dir() and not dst.exists():
+            try:
+                if sys.platform == "win32":
+                    import _winapi
+                    _winapi.CreateJunction(str(src), str(dst))
+                else:
+                    os.symlink(str(src), str(dst), target_is_directory=True)
+                linked.append(dst)
+            except Exception as e:
+                _default_console.print(f"[yellow]Warning: Could not link directory junction '{dir_name}': {e}[/yellow]")
+    return linked
+
+def unmount_worktree_junctions(worktree_path: Path, console: Console | None = None) -> None:
+    """
+    Safely unmounts/unlinks any junctions or symlinks within worktree_path,
+    guaranteeing that parent directory contents are never deleted or affected.
+    """
+    if not worktree_path.exists() or not worktree_path.is_dir():
+        return
+
+    c = console or _default_console
+    try:
+        for item in worktree_path.iterdir():
+            try:
+                if item.is_symlink():
+                    item.unlink()
+                elif sys.platform == "win32":
+                    try:
+                        s = item.lstat()
+                        if getattr(s, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                            try:
+                                os.unlink(str(item))
+                            except OSError:
+                                os.rmdir(str(item))
+                    except Exception:
+                        pass
+            except Exception as e:
+                c.print(f"[yellow]Warning: Could not unmount junction '{item}': {e}[/yellow]")
+    except Exception:
+        pass
+
+async def create_worktree(repo_dir: Path, branch_name: str, extra_junctions: list[str] | None = None) -> Path:
     """
     Creates an isolated git worktree under .orchestrator/worktrees/<branch_name>.
+    Automatically mounts OS directory junctions for dependencies (node_modules, .venv, etc.).
     Falls back to repo_dir with git checkout -b if worktree creation fails.
     """
     worktree_path = (repo_dir / ".orchestrator" / "worktrees" / branch_name).resolve()
@@ -73,10 +133,12 @@ async def create_worktree(repo_dir: Path, branch_name: str) -> Path:
 
     # Clean existing worktree if present
     if worktree_path.exists():
+        unmount_worktree_junctions(worktree_path)
         await run_git(["worktree", "remove", "--force", str(worktree_path)], cwd=repo_dir)
 
     res = await run_git(["worktree", "add", "-b", branch_name, str(worktree_path)], cwd=repo_dir)
     if res.success and worktree_path.exists():
+        mount_worktree_junctions(repo_dir, worktree_path, extra_junctions)
         return worktree_path
 
     # Fallback to in-place branch
@@ -115,6 +177,10 @@ async def remove_worktree(
     try:
         if worktree_path.resolve() == repo_dir.resolve():
             return True
+
+        # Safely dismount directory junctions first so parent repo assets are untouched
+        unmount_worktree_junctions(worktree_path, console=c)
+
         res = await run_git(["worktree", "remove", "--force", str(worktree_path)], cwd=repo_dir)
         if not res.success:
             err_msg = res.stderr.strip() or f"exit code {res.exit_code}"

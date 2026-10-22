@@ -1,10 +1,16 @@
 # AI Software Development Orchestration Configuration
-# Optimized Hybrid Profile: Paid DeepSeek for Planning/Coding + Free Gemini for Everything Else
+# Optimized Hybrid Profile: Paid DeepSeek for Planning/Coding + Free Gemini with DeepSeek Failover
 max_cost_usd: 2.00
 max_tokens: 500000
 test_timeout_seconds: 60
 max_edit_retries: 3
 max_plan_backtracks: 2
+
+# Extra dependency directories to mount in isolated git worktrees
+worktree_junctions:
+  - "node_modules"
+  - ".venv"
+  - "vendor"
 
 providers:
   deepseek:
@@ -21,16 +27,28 @@ providers:
 roles:
   triage:
     provider: gemini
-    model: gemini-3.8-flash       # FREE: 1M context to read large repo maps
+    model: gemini-3.8-flash       # Primary: Free 1M context
+    fallbacks:
+      - provider: deepseek
+        model: deepseek-chat      # Fallback: Instant failover on 503/429
   reproduce:
     provider: gemini
-    model: gemini-3.8-flash       # FREE: fast test case generation
+    model: gemini-3.8-flash
+    fallbacks:
+      - provider: deepseek
+        model: deepseek-chat
   planner:
     provider: deepseek
-    model: deepseek-reasoner      # PAID: DeepSeek-R1 deep chain-of-thought
+    model: deepseek-reasoner      # Primary: DeepSeek-R1 chain-of-thought
+    fallbacks:
+      - provider: deepseek
+        model: deepseek-chat
   coder:
     provider: deepseek
-    model: deepseek-chat          # PAID: DeepSeek-V3 / V4 for fast, precise code edits
+    model: deepseek-chat          # DeepSeek-V3 for fast atomic edits
   reviewer:
     provider: gemini
-    model: gemini-3.8-flash       # FREE: reads git diff and writes PR summary
+    model: gemini-3.8-flash
+    fallbacks:
+      - provider: deepseek
+        model: deepseek-chat

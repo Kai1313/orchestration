@@ -21,6 +21,7 @@ class RoleConfig(BaseModel):
     provider: str
     model: str
     protocol: str = "delimited_blocks"  # "delimited_blocks" or "json_tools"
+    fallbacks: list["RoleConfig"] = Field(default_factory=list)
 
 
 DEFAULT_PROVIDERS = {
@@ -69,6 +70,8 @@ class OrchestratorConfig(BaseModel):
     max_plan_backtracks: int = 2
     interactive_timeout: float | None = 300.0
     docker_image: str | None = None
+    worktree_junctions: list[str] = Field(default_factory=list)
+    auto_merge: bool = False
 
 
 def load_config(config_path: str | Path | None = None) -> OrchestratorConfig:

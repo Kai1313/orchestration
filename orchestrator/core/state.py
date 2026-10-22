@@ -48,6 +48,7 @@ class OrchestrationState(BaseModel):
     skip_verify: bool = False
     original_branch: str | None = None
     usage: TokenUsage = Field(default_factory=TokenUsage)
+    active_providers: dict[str, dict[str, str]] = Field(default_factory=dict)
 
     @property
     def prompt_tokens(self) -> int:

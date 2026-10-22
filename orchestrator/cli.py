@@ -1,7 +1,16 @@
 import asyncio
+import sys
 from pathlib import Path
 import typer
 from rich.console import Console
+
+# Ensure UTF-8 output on Windows consoles to prevent UnicodeEncodeError with emojis/box-drawings
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 from rich.table import Table
 from rich.panel import Panel
 
@@ -29,6 +38,7 @@ def solve(
     in_place: bool = typer.Option(False, "--in-place", help="Edit directly in active working tree on a new git branch"),
     skip_verify: bool = typer.Option(False, "--skip-verify", help="Skip automated test reproduction and verification stages"),
     web: bool = typer.Option(False, "--web", help="Web preset: enables in-place editing, skip-verify, and interactive preview"),
+    auto_merge: bool = typer.Option(False, "--auto-merge", help="Automatically merge fix branch into original branch upon successful verification"),
     resume: str = typer.Option(None, "--resume", help="Resume an existing run_id from checkpoint"),
     test_cmd: str = typer.Option(None, "--test-cmd", help="Override auto-detected test command"),
     config_file: str = typer.Option(None, "--config", "-c", help="Path to orchestrator.yaml configuration"),
@@ -42,6 +52,8 @@ def solve(
         interactive = True
 
     cfg = load_config(config_file)
+    if auto_merge:
+        cfg.auto_merge = True
     repo_path = Path(repo).resolve()
 
     # Read issue text from file if path is given
@@ -99,6 +111,10 @@ def solve(
             f"{state.pr_body}",
             title="Pull Request Ready",
         ))
+        if state.in_place and state.original_branch and not cfg.auto_merge:
+            console.print("\n[bold cyan]To merge these changes into your active branch, run:[/bold cyan]")
+            console.print(f"  git checkout {state.original_branch}")
+            console.print(f"  git merge {state.worktree_branch}\n")
     else:
         console.print(Panel(
             f"[bold red]Run Ended: {state.current_phase}[/bold red]\n"
@@ -148,6 +164,7 @@ def config():
     table.add_column("Role", style="cyan")
     table.add_column("Provider", style="magenta")
     table.add_column("Model", style="green")
+    table.add_column("Fallbacks", style="dim")
     table.add_column("API Key Status", style="yellow")
 
     for role_name, role_cfg in cfg.roles.items():
@@ -157,7 +174,8 @@ def config():
             status_text = "[green]Found[/green]" if (key or provider.name == "ollama") else "[red]Missing (Env)[/red]"
         else:
             status_text = "[red]Unknown[/red]"
-        table.add_row(role_name, role_cfg.provider, role_cfg.model, status_text)
+        fallbacks_str = ", ".join(f"{fb.provider}/{fb.model}" for fb in role_cfg.fallbacks) if role_cfg.fallbacks else "-"
+        table.add_row(role_name, role_cfg.provider, role_cfg.model, fallbacks_str, status_text)
 
     console.print(table)
 
