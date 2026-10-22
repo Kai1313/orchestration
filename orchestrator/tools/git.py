@@ -27,6 +27,42 @@ async def ensure_git_repo(repo_dir: Path) -> bool:
     return res.success
 
 
+def ensure_orchestrator_ignored(repo_dir: Path) -> None:
+    """
+    Ensures .orchestrator is excluded from git tracking in repo_dir by adding
+    it to .git/info/exclude if not already present.
+    """
+    git_dir = repo_dir / ".git"
+    if git_dir.is_dir():
+        exclude_file = git_dir / "info" / "exclude"
+    elif git_dir.is_file():
+        try:
+            content = git_dir.read_text(encoding="utf-8").strip()
+            if content.startswith("gitdir:"):
+                actual_git_dir = Path(content.replace("gitdir:", "").strip())
+                if not actual_git_dir.is_absolute():
+                    actual_git_dir = (repo_dir / actual_git_dir).resolve()
+                exclude_file = actual_git_dir / "info" / "exclude"
+            else:
+                return
+        except (OSError, UnicodeDecodeError, ValueError):
+            return
+    else:
+        return
+
+    try:
+        exclude_file.parent.mkdir(parents=True, exist_ok=True)
+        existing = exclude_file.read_text(encoding="utf-8") if exclude_file.exists() else ""
+        existing_lines = [line.strip() for line in existing.splitlines()]
+        if ".orchestrator" not in existing_lines and ".orchestrator/" not in existing_lines:
+            with open(exclude_file, "a", encoding="utf-8") as f:
+                if existing and not existing.endswith("\n"):
+                    f.write("\n")
+                f.write(".orchestrator/\n")
+    except (OSError, UnicodeDecodeError, ValueError):
+        pass
+
+
 async def create_worktree(repo_dir: Path, branch_name: str) -> Path:
     """
     Creates an isolated git worktree under .orchestrator/worktrees/<branch_name>.
@@ -104,9 +140,22 @@ async def remove_worktree(
 
 
 async def is_git_clean(repo_dir: Path) -> bool:
-    """Checks if the working tree has no uncommitted or unstaged changes."""
+    """Checks if the working tree has no uncommitted or unstaged changes, ignoring .orchestrator."""
     res = await run_git(["status", "--porcelain"], cwd=repo_dir)
-    return res.success and len(res.stdout.strip()) == 0
+    if not res.success:
+        return False
+    unclean_lines = []
+    for raw_line in res.stdout.strip().splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        # Porcelain output starts with 2 status chars followed by path
+        # Example: "?? .orchestrator/" or "M  file.py"
+        target_path = line[2:].strip().replace("\\", "/")
+        if target_path == ".orchestrator" or target_path.startswith(".orchestrator/"):
+            continue
+        unclean_lines.append(line)
+    return len(unclean_lines) == 0
 
 
 async def get_current_branch(repo_dir: Path) -> str:

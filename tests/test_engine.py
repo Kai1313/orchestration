@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock
 from orchestrator.config import OrchestratorConfig
 from orchestrator.core.engine import OrchestrationEngine
 from orchestrator.core.state import TDDPhase
-from orchestrator.tools.git import remove_worktree, ensure_git_repo, create_worktree
+from orchestrator.tools.git import (
+    remove_worktree,
+    ensure_git_repo,
+    create_worktree,
+    is_git_clean,
+    ensure_orchestrator_ignored,
+)
 from tests.test_harness_e2e import init_mock_git_repo
 
 
@@ -82,3 +88,29 @@ async def test_engine_cancelled_cleans_worktree(tmp_path: Path):
     if worktrees_dir.exists():
         subdirs = [p for p in worktrees_dir.iterdir() if p.is_dir()]
         assert len(subdirs) == 0
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_ignored_and_clean_working_tree(tmp_path: Path):
+    repo_dir = tmp_path / "repo_ignore_test"
+    repo_dir.mkdir()
+    init_mock_git_repo(repo_dir)
+
+    # 1. ensure_orchestrator_ignored writes to .git/info/exclude
+    ensure_orchestrator_ignored(repo_dir)
+    exclude_file = repo_dir / ".git" / "info" / "exclude"
+    assert exclude_file.exists()
+    assert ".orchestrator/" in exclude_file.read_text(encoding="utf-8")
+
+    # 2. Creating files inside .orchestrator should NOT make git dirty
+    orc_dir = repo_dir / ".orchestrator" / "runs" / "test_run"
+    orc_dir.mkdir(parents=True, exist_ok=True)
+    (orc_dir / "state.json").write_text("{}", encoding="utf-8")
+
+    clean = await is_git_clean(repo_dir)
+    assert clean is True
+
+    # 3. But creating an actual untracked source file DOES make git dirty
+    (repo_dir / "untracked.py").write_text("print('hello')", encoding="utf-8")
+    dirty = await is_git_clean(repo_dir)
+    assert dirty is False

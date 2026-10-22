@@ -39,6 +39,7 @@ from orchestrator.tools.git import (
     get_current_branch,
     checkout_branch,
     delete_branch,
+    ensure_orchestrator_ignored,
 )
 from orchestrator.providers.router import ModelRouter
 from orchestrator.providers.protocol import (
@@ -138,6 +139,7 @@ class OrchestrationEngine:
         skip_verify: bool = False,
     ) -> OrchestrationState:
         repo_dir = Path(repo_path).resolve()
+        ensure_orchestrator_ignored(repo_dir)
         run_id = resume_run_id or f"run_{uuid.uuid4().hex[:8]}"
         checkpoint_dir = repo_dir / ".orchestrator" / "runs"
         checkpoint_mgr = CheckpointManager(checkpoint_dir, run_id)
